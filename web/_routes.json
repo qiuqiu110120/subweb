@@ -1,5 +1,0 @@
-﻿{
-  "version": 1,
-  "include": ["/api/*", "/sub/*"],
-  "exclude": ["/css/*", "/js/*", "/favicon.ico"]
-}
