@@ -1,0 +1,14 @@
+﻿name = "proxy-subscription"
+main = "src/index.ts"
+compatibility_date = "2025-03-03"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "proxy-subscription-db"
+database_id = ""
+
+[vars]
+JWT_SECRET = "change-me-in-production"
+
+[observability]
+enabled = true
