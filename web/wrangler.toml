@@ -5,4 +5,4 @@ pages_build_output_dir = "."
 [[d1_databases]]
 binding = "DB"
 database_name = "proxy-subscription-db"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "76cc4f8f-d0c0-4494-aaec-8db31079f5cf"
