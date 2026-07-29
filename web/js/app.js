@@ -53,6 +53,11 @@ const App = {
       DashboardPage.startAutoRefresh();
       return;
     }
+    if (route === '/admin') {
+      this.currentPage = 'admin';
+      AdminPage.render();
+      return;
+    }
     this.navigate('/');
   },
 
@@ -69,6 +74,7 @@ const App = {
     this.state.token = null;
     this.state.me = null;
     DashboardPage.reset();
+    AdminPage.reset();
     this.navigate('/login');
   },
 

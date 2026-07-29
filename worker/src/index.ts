@@ -16,7 +16,7 @@ export default {
       return withCors(request, new Response(null, {
         status: 204,
         headers: {
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
           "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Node-Secret",
           "Access-Control-Max-Age": "86400",
         },

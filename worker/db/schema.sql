@@ -7,10 +7,13 @@ CREATE TABLE IF NOT EXISTS users (
   username      TEXT NOT NULL,
   avatar_url    TEXT NOT NULL DEFAULT '',
   trust_level   INTEGER NOT NULL DEFAULT 0 CHECK (trust_level >= 0),
+  role          TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
   status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'banned')),
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_users_role_status ON users(role, status);
 
 CREATE TABLE IF NOT EXISTS products (
   id              TEXT PRIMARY KEY,

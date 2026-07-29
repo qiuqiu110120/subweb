@@ -1,2 +1,3 @@
 JWT_SECRET=replace-this-with-a-random-secret-at-least-32-characters-long
 NODE_API_SECRET=replace-this-with-a-separate-node-reporting-secret
+ADMIN_BOOTSTRAP_TOKEN=replace-this-with-a-one-time-admin-setup-token

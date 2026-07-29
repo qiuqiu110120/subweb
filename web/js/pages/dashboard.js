@@ -82,6 +82,7 @@ const DashboardPage = {
           </a>
           <span class="topbar-status"><span class="status-dot"></span>服务在线</span>
           <div class="topbar-spacer"></div>
+          ${user.role === 'admin' ? '<a class="btn btn-ghost btn-sm" href="#/admin">管理后台</a>' : ''}
           <button class="icon-button" type="button" data-theme-icon title="切换主题" aria-label="切换主题">${App.themeIcon()}</button>
           <button class="btn btn-ghost btn-sm" type="button" id="logout-button">退出登录</button>
         </header>

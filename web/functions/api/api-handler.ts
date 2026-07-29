@@ -1,9 +1,15 @@
 import bcrypt from "bcryptjs";
+import {
+  handleAdminBootstrap,
+  handleAdminRequest,
+  handleAdminSetupStatus,
+} from "./admin";
 
 export interface Env {
   DB: D1Database;
   JWT_SECRET: string;
   NODE_API_SECRET?: string;
+  ADMIN_BOOTSTRAP_TOKEN?: string;
 }
 
 interface SessionUser {
@@ -11,6 +17,7 @@ interface SessionUser {
   email: string;
   username: string;
   status: string;
+  role: string;
 }
 
 interface Product {
@@ -158,7 +165,7 @@ async function authenticate(request: Request, env: Env): Promise<SessionUser | R
   const payload = await verifyJwt(authorization.slice(7), env.JWT_SECRET);
   if (!payload) return apiError("登录已过期，请重新登录", 401, "INVALID_TOKEN");
   const user = await env.DB.prepare(
-    "SELECT id, email, username, status FROM users WHERE id = ?",
+    "SELECT id, email, username, status, role FROM users WHERE id = ?",
   ).bind(payload.sub).first<SessionUser>();
   if (!user || user.status !== "active") return apiError("账号不存在或已停用", 403, "ACCOUNT_DISABLED");
   return user;
@@ -229,8 +236,8 @@ async function handleRegister(request: Request, env: Env): Promise<Response> {
     console.error("register failed", error);
     return apiError("注册失败，请稍后重试", 500, "REGISTER_FAILED");
   }
-  const user = { id: userId, email, username, status: "active" };
-  return json({ token: await createJwt(user, env.JWT_SECRET), user: { id: userId, email, username } }, 201);
+  const user = { id: userId, email, username, status: "active", role: "user" };
+  return json({ token: await createJwt(user, env.JWT_SECRET), user: { id: userId, email, username, role: "user" } }, 201);
 }
 
 async function handleLogin(request: Request, env: Env): Promise<Response> {
@@ -239,16 +246,16 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const password = typeof body.password === "string" ? body.password : "";
   const user = await env.DB.prepare(
-    "SELECT id, email, username, status, password_hash FROM users WHERE email = ?",
+    "SELECT id, email, username, status, role, password_hash FROM users WHERE email = ?",
   ).bind(email).first<SessionUser & { password_hash: string }>();
   if (!user || !(await bcrypt.compare(password, user.password_hash))) return apiError("邮箱或密码错误", 401, "INVALID_CREDENTIALS");
   if (user.status !== "active") return apiError("账号已停用", 403, "ACCOUNT_DISABLED");
-  return json({ token: await createJwt(user, env.JWT_SECRET), user: { id: user.id, email: user.email, username: user.username } });
+  return json({ token: await createJwt(user, env.JWT_SECRET), user: { id: user.id, email: user.email, username: user.username, role: user.role } });
 }
 
 async function handleMe(env: Env, user: SessionUser, request: Request): Promise<Response> {
   const profile = await env.DB.prepare(
-    "SELECT id, email, username, avatar_url, trust_level FROM users WHERE id = ?",
+    "SELECT id, email, username, avatar_url, trust_level, role FROM users WHERE id = ?",
   ).bind(user.id).first();
   const allocation = await activeAllocation(env, user.id);
   const products = await getProducts(env);
@@ -502,26 +509,29 @@ export async function handleRequest(request: Request, env: Env, path = new URL(r
       return apiError("服务端尚未完成安全配置", 503, "SERVER_NOT_CONFIGURED");
     }
     if (request.method === "GET" && path === "/api/site-info") return json({ name: "ProxySubscription", description: "高速稳定的代理订阅服务平台", registrationEnabled: true });
-    if (request.method === "POST" && path === "/api/auth/register") return handleRegister(request, env);
-    if (request.method === "POST" && path === "/api/auth/login") return handleLogin(request, env);
+    if (request.method === "GET" && path === "/api/admin/setup-status") return await handleAdminSetupStatus(env);
+    if (request.method === "POST" && path === "/api/admin/bootstrap") return await handleAdminBootstrap(request, env);
+    if (request.method === "POST" && path === "/api/auth/register") return await handleRegister(request, env);
+    if (request.method === "POST" && path === "/api/auth/login") return await handleLogin(request, env);
     const subMatch = request.method === "GET" ? path.match(/^\/sub\/([a-f0-9]{48})\/([a-z0-9-]+)$/i) : null;
-    if (subMatch) return handleSubscription(env, subMatch[1], subMatch[2].toLowerCase());
-    if (request.method === "POST" && path === "/api/traffic") return handleTraffic(request, env);
+    if (subMatch) return await handleSubscription(env, subMatch[1], subMatch[2].toLowerCase());
+    if (request.method === "POST" && path === "/api/traffic") return await handleTraffic(request, env);
 
     const user = await authenticate(request, env);
     if (user instanceof Response) return user;
-    if (request.method === "GET" && path === "/api/me") return handleMe(env, user, request);
+    if (path.startsWith("/api/admin/")) return await handleAdminRequest(request, env, path, user);
+    if (request.method === "GET" && path === "/api/me") return await handleMe(env, user, request);
     if (request.method === "POST" && path === "/api/auth/logout") return new Response(null, { status: 204 });
-    if (request.method === "POST" && path === "/api/orders") return handleCreateOrder(request, env, user);
+    if (request.method === "POST" && path === "/api/orders") return await handleCreateOrder(request, env, user);
     const orderMatch = request.method === "GET" ? path.match(/^\/api\/orders\/([0-9a-f-]{36})$/i) : null;
-    if (orderMatch) return handleOrder(env, user, orderMatch[1]);
-    if (request.method === "POST" && path === "/api/redeem") return handleRedeem(request, env, user);
-    if (request.method === "POST" && path === "/api/rotate-uuid") return handleRotateUuid(env, user);
+    if (orderMatch) return await handleOrder(env, user, orderMatch[1]);
+    if (request.method === "POST" && path === "/api/redeem") return await handleRedeem(request, env, user);
+    if (request.method === "POST" && path === "/api/rotate-uuid") return await handleRotateUuid(env, user);
     if (request.method === "GET" && path === "/api/nodes") {
       const nodes = await env.DB.prepare("SELECT id, name, protocol, network, security FROM nodes WHERE is_active = 1 ORDER BY sort_order, name").all();
       return json(nodes.results);
     }
-    if (request.method === "POST" && path === "/api/checkin") return handleCheckin(env, user);
+    if (request.method === "POST" && path === "/api/checkin") return await handleCheckin(env, user);
     return apiError("接口不存在", 404, "NOT_FOUND");
   } catch (error) {
     console.error("request failed", error);

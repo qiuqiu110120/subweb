@@ -37,6 +37,9 @@ const LoginPage = {
             ${this.isLogin ? '还没有账号？' : '已有账号？'}
             <button class="text-button" type="button" id="auth-toggle">${this.isLogin ? '立即注册' : '返回登录'}</button>
           </p>
+          <p class="login-footer admin-setup-entry" id="admin-setup-entry" hidden>
+            尚未创建管理员？<button class="text-button" type="button" id="admin-setup-button">初始化管理员</button>
+          </p>
         </section>
       </main>`;
     document.querySelector('[data-theme-icon]').addEventListener('click', () => App.toggleTheme());
@@ -45,6 +48,65 @@ const LoginPage = {
       this.render();
     });
     document.getElementById('auth-form').addEventListener('submit', (event) => this.handleSubmit(event));
+    this.loadAdminSetupStatus();
+  },
+
+  async loadAdminSetupStatus() {
+    try {
+      const status = await api.adminSetupStatus();
+      const entry = document.getElementById('admin-setup-entry');
+      if (!entry || !status.required) return;
+      entry.hidden = false;
+      const button = document.getElementById('admin-setup-button');
+      button.textContent = status.configured ? '初始化管理员' : '服务端尚未配置初始化令牌';
+      button.disabled = !status.configured;
+      if (status.configured) button.addEventListener('click', () => this.showAdminSetup());
+    } catch { /* The regular login remains available. */ }
+  },
+
+  showAdminSetup() {
+    App.showModal('初始化管理员', `
+      <form id="admin-setup-form">
+        <div class="form-group">
+          <label class="form-label" for="setup-token">初始化令牌</label>
+          <input type="password" class="form-input" id="setup-token" autocomplete="off" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="setup-username">管理员名称</label>
+          <input class="form-input" id="setup-username" minlength="2" maxlength="32" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="setup-email">管理员邮箱</label>
+          <input type="email" class="form-input" id="setup-email" maxlength="254" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="setup-password">管理员密码</label>
+          <input type="password" class="form-input" id="setup-password" minlength="10" maxlength="72" autocomplete="new-password" required>
+        </div>
+        <p class="form-error" id="setup-error" role="alert"></p>
+        <button class="btn btn-primary" type="submit">创建管理员</button>
+      </form>`, () => {
+      document.getElementById('admin-setup-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const submit = event.currentTarget.querySelector('button[type="submit"]');
+        const errorElement = document.getElementById('setup-error');
+        submit.disabled = true;
+        errorElement.textContent = '';
+        try {
+          await api.adminBootstrap({
+            token: document.getElementById('setup-token').value,
+            username: document.getElementById('setup-username').value.trim(),
+            email: document.getElementById('setup-email').value.trim(),
+            password: document.getElementById('setup-password').value,
+          });
+          App.hideModal();
+          App.toast('管理员创建成功，请登录');
+          this.render();
+        } catch (error) {
+          errorElement.textContent = error.message;
+        } finally { submit.disabled = false; }
+      });
+    });
   },
 
   async handleSubmit(event) {
@@ -63,7 +125,7 @@ const LoginPage = {
       localStorage.setItem('user', JSON.stringify(data.user));
       App.state.token = data.token;
       App.toast(this.isLogin ? '登录成功' : '注册成功');
-      App.navigate('/');
+      App.navigate(data.user.role === 'admin' ? '/admin' : '/');
     } catch (error) {
       errorElement.textContent = error.message;
     } finally {
