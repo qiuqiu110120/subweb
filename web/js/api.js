@@ -1,91 +1,51 @@
-﻿// API Client for ProxySubscription
 const API_BASE = '/api';
 
 const api = {
   async request(path, options = {}) {
     const token = localStorage.getItem('token');
-    const headers = { 'Content-Type': 'application/json' };
-    if (token) headers['Authorization'] = Bearer \;
-
-    const res = await fetch(API_BASE + path, { ...options, headers: { ...headers, ...options.headers } });
-    const data = await res.json();
-
-    if (!res.ok) {
-      if (res.status === 401) {
+    const headers = new Headers(options.headers || {});
+    if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    let response;
+    try {
+      response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    } catch {
+      throw new Error('网络连接失败，请稍后重试');
+    }
+    const contentType = response.headers.get('content-type') || '';
+    const data = response.status === 204
+      ? null
+      : contentType.includes('application/json')
+        ? await response.json()
+        : { error: await response.text() };
+    if (!response.ok) {
+      if (response.status === 401) {
         localStorage.removeItem('token');
         localStorage.removeItem('user');
-        if (window.location.pathname !== '/login') {
-          window.location.hash = '#/login';
-        }
       }
-      throw new Error(data.error || 'Request failed');
+      const error = new Error(data?.error || '请求失败');
+      error.code = data?.code;
+      error.status = response.status;
+      throw error;
     }
     return data;
   },
 
-  // Auth
-  register(email, password) {
-    return this.request('/auth/register', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    });
-  },
-
-  login(email, password) {
-    return this.request('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    });
-  },
-
-  // User
-  me() {
-    return this.request('/me');
-  },
-
-  // Orders
-  createOrder(packageId, orderType) {
-    return this.request('/orders', {
-      method: 'POST',
-      body: JSON.stringify({ package_id: packageId, order_type: orderType }),
-    });
-  },
-
-  getOrders() {
-    return this.request('/orders');
-  },
-
-  // Subscription
-  getSubscriptionLink(format) {
-    return this.request(/sub/link?format=\);
-  },
-
-  changeUUID() {
-    return this.request('/me/uuid', { method: 'PUT' });
-  },
-
-  // Redeem
-  redeemCode(code) {
-    return this.request('/redeem', {
-      method: 'POST',
-      body: JSON.stringify({ code }),
-    });
-  },
-
-  // Admin
-  adminUsers() {
-    return this.request('/admin/users');
-  },
-
-  adminPackages() {
-    return this.request('/admin/packages');
-  },
-
-  adminNodes() {
-    return this.request('/admin/nodes');
-  },
-
-  adminStats() {
-    return this.request('/admin/stats');
-  },
+  siteInfo: () => api.request('/site-info'),
+  register: (email, password, username) => api.request('/auth/register', {
+    method: 'POST', body: JSON.stringify({ email, password, username }),
+  }),
+  login: (email, password) => api.request('/auth/login', {
+    method: 'POST', body: JSON.stringify({ email, password }),
+  }),
+  logout: () => api.request('/auth/logout', { method: 'POST' }),
+  me: () => api.request('/me'),
+  createOrder: (productId, orderType) => api.request('/orders', {
+    method: 'POST', body: JSON.stringify({ productId, orderType }),
+  }),
+  getOrder: (id) => api.request(`/orders/${encodeURIComponent(id)}`),
+  rotateUUID: () => api.request('/rotate-uuid', { method: 'POST' }),
+  redeem: (code) => api.request('/redeem', { method: 'POST', body: JSON.stringify({ code }) }),
+  checkin: () => api.request('/checkin', { method: 'POST' }),
+  nodes: () => api.request('/nodes'),
 };

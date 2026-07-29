@@ -107,7 +107,7 @@ a {
 .login-card {
   position: relative;
   z-index: 1;
-  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   border-radius: var(--radius-xl);
@@ -131,12 +131,7 @@ a {
   box-shadow: 0 8px 24px rgba(37, 99, 235, 0.15);
   margin: 0 auto 20px;
   display: block;
-  background: linear-gradient(135deg, var(--primary), var(--accent));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 40px;
-  color: #fff;
+  background: var(--primary);
 }
 
 .login-brand {
@@ -147,7 +142,7 @@ a {
 .login-eyebrow {
   font-size: 11px;
   font-weight: 760;
-  letter-spacing: 0.15em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--primary);
   margin-bottom: 4px;
@@ -321,8 +316,10 @@ a {
 
 /* Topbar */
 .topbar {
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
+  right: 0;
   z-index: 100;
   height: 56px;
   background: var(--panel);
@@ -355,6 +352,13 @@ a {
   justify-content: center;
   color: #fff;
   font-size: 16px;
+}
+
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  flex: 0 0 32px;
 }
 
 .topbar-spacer { flex: 1; }
@@ -416,6 +420,10 @@ a {
   gap: 40px;
   box-shadow: var(--shadow);
   animation: surface-enter 0.5s var(--motion-ease);
+  background-image:
+    linear-gradient(rgba(37, 99, 235, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(8, 145, 178, 0.025) 1px, transparent 1px);
+  background-size: 32px 32px;
 }
 
 .meter-ring-container {
@@ -478,6 +486,8 @@ a {
 
 .meter-stat {
   text-align: center;
+  display: flex;
+  flex-direction: column;
 }
 
 .meter-stat-value {
@@ -804,3 +814,158 @@ a {
   display: inline-block;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- Blueprint Components ---------- */
+.dashboard-page {
+  padding-top: 56px;
+}
+
+.icon-button {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font: 700 18px/1 inherit;
+  cursor: pointer;
+  transition: background 0.15s var(--motion-ease), transform 0.15s var(--motion-ease);
+}
+
+.icon-button:hover { background: rgba(37, 99, 235, 0.07); transform: translateY(-2px); }
+.icon-button:active { transform: scale(0.97); }
+
+.page-loading {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+
+.details-list { margin: 0; }
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.3fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.row dt { color: var(--muted); font-size: 13px; font-weight: 600; }
+.row dd { margin: 0; min-width: 0; color: var(--ink); word-break: break-word; }
+
+.uuid-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.uuid-control code,
+.link-row code {
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+}
+
+.subscription-links { margin-top: 24px; }
+.subscription-links h3 { margin-bottom: 10px; color: var(--ink); font-size: 14px; }
+
+.link-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  margin-top: 8px;
+}
+
+.link-row strong { display: block; color: var(--ink); font-size: 13px; }
+.link-row code { display: block; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.panel-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.form-error {
+  min-height: 22px;
+  margin: 6px 0 10px;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.text-button {
+  border: 0;
+  background: none;
+  color: var(--primary);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.app-dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 40px));
+  margin: auto;
+  padding: 28px 30px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.25);
+}
+
+.app-dialog[open] { animation: surface-enter 0.25s var(--motion-ease); }
+.app-dialog::backdrop { background: rgba(11, 17, 32, 0.56); backdrop-filter: blur(4px); }
+
+.dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.dialog-header h2 { color: var(--ink); font-size: 18px; }
+.product-list { display: grid; gap: 10px; }
+
+.product-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.product-card h3 { color: var(--ink); font-size: 14px; }
+.product-card p, .product-card small { display: block; color: var(--muted); font-size: 12px; }
+.product-card.is-disabled { opacity: 0.55; }
+.product-action { display: flex; align-items: center; gap: 12px; }
+.product-action strong { color: var(--primary); white-space: nowrap; }
+.empty-state { padding: 22px; color: var(--muted); text-align: center; }
+
+@media (max-width: 600px) {
+  .topbar { padding: 0 12px; gap: 8px; }
+  .topbar-brand span { display: none; }
+  .topbar-status { font-size: 12px; }
+  .row { grid-template-columns: 1fr; gap: 4px; }
+  .uuid-control { align-items: flex-start; flex-direction: column; }
+  .panel-actions { width: 100%; }
+  .panel-actions .btn { flex: 1; min-width: 74px; }
+  .identity { align-items: flex-start; flex-wrap: wrap; }
+  .identity .btn { margin-left: 64px; }
+  .app-dialog { padding: 24px 20px; }
+  .product-card { grid-template-columns: 1fr; }
+  .product-action { justify-content: space-between; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

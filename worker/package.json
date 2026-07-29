@@ -6,10 +6,15 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:init": "wrangler d1 execute proxy-subscription-db --file=./schema.sql"
+    "db:init": "wrangler d1 execute proxy-subscription-db --file=./db/schema.sql",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250303.0",
+    "typescript": "^5.8.2",
     "wrangler": "^3.107.2"
   }
 }

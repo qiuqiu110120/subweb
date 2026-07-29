@@ -1,25 +1,26 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN" data-theme="light">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>ProxySubscription - 代理订阅服务</title>
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
   <div id="app"></div>
-
-  <!-- Toast container -->
-  <div id="toast-container" class="toast-container"></div>
-
-  <!-- Modal overlay -->
-  <div id="modal-overlay" class="modal-overlay" style="display:none"></div>
-  <div id="modal-content" class="modal-content" style="display:none"></div>
-
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+  <dialog id="app-dialog" class="app-dialog" aria-labelledby="dialog-title">
+    <header class="dialog-header">
+      <h2 id="dialog-title"></h2>
+      <button class="icon-button" type="button" title="关闭" aria-label="关闭" onclick="App.hideModal()">×</button>
+    </header>
+    <div id="dialog-body"></div>
+  </dialog>
   <script src="/js/api.js"></script>
   <script src="/js/pages/login.js"></script>
   <script src="/js/pages/dashboard.js"></script>
-  <script src="/js/pages/admin.js"></script>
   <script src="/js/app.js"></script>
 </body>
 </html>

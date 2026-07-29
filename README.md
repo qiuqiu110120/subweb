@@ -1,59 +1,44 @@
-# ProxySubscription - ´úÀí¶©ÔÄÁ÷Á¿ÏúÊÛÆ½Ì¨
+# ProxySubscription
 
-ÇáÁ¿¼¶´úÀí¶©ÔÄÁ÷Á¿ÏúÊÛÆ½Ì¨£¨»ú³¡Ãæ°å£©£¬»ùÓÚ traffic.dogegg.online ÍêÕûÄæÏò·ÖÎö¡£
+åŸºäº Cloudflare Pagesã€Workers å’Œ D1 çš„è½»é‡çº§ä»£ç†è®¢é˜…æµé‡é”€å”®å¹³å°ã€‚å®ç°ä»¥ `docs/BLUEPRINT.md` ä¸ºå‡†ã€‚
 
-## ¼¼ÊõÕ»
+## é¡¹ç›®ç»“æ„
 
-| ²ã¼¶ | ¼¼Êõ |
-|------|------|
-| Ç°¶Ë | Ô­Éú JS SPA |
-| ºó¶Ë | Cloudflare Pages Functions / Workers (TypeScript) |
-| Êı¾İ¿â | Cloudflare D1 (SQLite) |
-| ÈÏÖ¤ | JWT (HS256) |
-| ²¿Êğ | Cloudflare Pages (Ãâ·Ñ¶î¶È) |
-
-## ÏîÄ¿½á¹¹
-
-```
-web/                    # Ç°¶Ë + Pages Functions
-  index.html            # SPA Èë¿Ú
-  css/style.css         # Éè¼ÆÏµÍ³ + È«¾ÖÑùÊ½
-  js/
-    api.js              # API ¿Í»§¶Ë
-    app.js              # Â·ÓÉ + Ö÷Ìâ + Toast + Modal
-    pages/
-      login.js          # µÇÂ¼/×¢²áÒ³
-      dashboard.js      # ÒÇ±íÅÌÖ÷Ò³
-      admin.js          # ¹ÜÀíºóÌ¨£¨Phase 6£©
-  functions/api/
-    [[route]].ts        # Pages Functions Â·ÓÉ
-    api-handler.ts      # ¹²Ïí API Âß¼­
-worker/                 # ¶ÀÁ¢ Worker£¨¿ÉÑ¡£©
-  src/index.ts
-  schema.sql            # D1 Êı¾İ¿â schema
-docs/BLUEPRINT.md       # ¿ª·¢À¶Í¼
+```text
+web/                         é™æ€ SPA ä¸ Pages Functions
+  functions/api/            /api/*
+  functions/sub/            /sub/*
+  js/                        åŸç”Ÿ JavaScript é¡µé¢ä¸çŠ¶æ€ç®¡ç†
+worker/                      å¯ç‹¬ç«‹éƒ¨ç½²çš„ Worker å…¥å£
+  db/schema.sql              D1 schema ä¸é»˜è®¤å¥—é¤
+docs/BLUEPRINT.md            äº§å“ä¸æŠ€æœ¯è“å›¾
 ```
 
-## ¿ìËÙ¿ªÊ¼
+## æœ¬åœ°å¼€å‘
 
-### 1. °²×°ÒÀÀµ
+éœ€è¦ Node.js 20+ å’Œ pnpm/npmã€‚
+
+```bash
+cd web
+pnpm install
+cp .dev.vars.example .dev.vars
+npx wrangler pages dev .
 ```
+
+å¦å¼€ç»ˆç«¯åˆå§‹åŒ–æœ¬åœ° D1ï¼š
+
+```bash
 cd worker
-npm install
+pnpm install
+npx wrangler d1 execute proxy-subscription-db --local --file=./db/schema.sql
 ```
 
-### 2. ´´½¨ D1 Êı¾İ¿â
-```
-npx wrangler d1 create proxy-subscription-db
-npx wrangler d1 execute proxy-subscription-db --file=./schema.sql
-```
+## Cloudflare éƒ¨ç½²
 
-### 3. ±¾µØ¿ª·¢
-```
-npx wrangler pages dev web/
-```
+1. ä½¿ç”¨ `wrangler d1 create proxy-subscription-db` åˆ›å»º D1ã€‚
+2. å°†ä¸¤ä¸ª `wrangler.toml` ä¸­çš„å ä½ `database_id` æ›¿æ¢ä¸ºå®é™… IDã€‚
+3. æ‰§è¡Œ `wrangler secret put JWT_SECRET`ï¼Œå¯†é’¥è‡³å°‘ 32 ä¸ªå­—ç¬¦ã€‚
+4. è‹¥å¯ç”¨èŠ‚ç‚¹æµé‡ä¸ŠæŠ¥ï¼Œå†æ‰§è¡Œ `wrangler secret put NODE_API_SECRET`ã€‚
+5. ä½¿ç”¨ `worker/db/schema.sql` åˆå§‹åŒ–è¿œç¨‹ D1ï¼Œå†éƒ¨ç½² Pages æˆ–ç‹¬ç«‹ Workerã€‚
 
-### 4. ²¿Êğ
-```
-npx wrangler pages deploy web/
-```
+ä¸è¦å°† `.dev.vars` æˆ–ç”Ÿäº§å¯†é’¥æäº¤åˆ°ä»“åº“ã€‚

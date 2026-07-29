@@ -1,0 +1,2 @@
+JWT_SECRET=replace-this-with-a-random-secret-at-least-32-characters-long
+NODE_API_SECRET=replace-this-with-a-separate-node-reporting-secret

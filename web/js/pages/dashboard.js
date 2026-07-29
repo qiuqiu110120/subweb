@@ -1,266 +1,204 @@
-﻿// Dashboard Page
 const DashboardPage = {
-  user: null,
-  subscription: null,
   refreshTimer: null,
+  loading: false,
 
-  async load() {
+  reset() {
+    this.stopAutoRefresh();
+    App.state.me = null;
+    this.loading = false;
+  },
+
+  async load({ silent = false } = {}) {
+    if (this.loading) return;
+    this.loading = true;
     try {
       const data = await api.me();
-      this.user = data.user;
-      this.subscription = data.subscription;
+      App.state.me = data;
       localStorage.setItem('user', JSON.stringify(data.user));
-    } catch (err) {
-      App.toast('加载失败: ' + err.message, 'error');
+    } catch (error) {
+      if (error.status === 401 || error.status === 403) {
+        localStorage.removeItem('token');
+        App.navigate('/login');
+        return;
+      }
+      if (!silent) App.toast(`加载失败：${error.message}`, 'error');
+      throw error;
+    } finally {
+      this.loading = false;
     }
   },
 
-  formatBytes(bytes) {
-    if (!bytes && bytes !== 0) return '0 B';
-    const b = Number(bytes);
-    if (b >= 1073741824) return (b / 1073741824).toFixed(2) + ' GB';
-    if (b >= 1048576) return (b / 1048576).toFixed(2) + ' MB';
-    if (b >= 1024) return (b / 1024).toFixed(2) + ' KB';
-    return b + ' B';
+  formatBytes(value) {
+    const bytes = Math.max(0, Number(value) || 0);
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    if (bytes === 0) return '0 B';
+    const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    return `${(bytes / (1024 ** index)).toFixed(index > 2 ? 2 : 0)} ${units[index]}`;
   },
 
-  getPercent() {
-    if (!this.user) return 0;
-    const limit = Number(this.user.traffic_limit) || 1;
-    const used = Number(this.user.traffic_used) || 0;
-    return Math.min((used / limit) * 100, 100);
-  },
-
-  formatDate(dateStr) {
-    if (!dateStr) return '--';
-    try {
-      const d = new Date(dateStr.replace(' ', 'T') + 'Z');
-      if (isNaN(d.getTime())) return dateStr;
-      return d.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-    } catch { return dateStr; }
-  },
-
-  getInitial(email) {
-    return email ? email.charAt(0).toUpperCase() : 'U';
+  formatDate(timestamp) {
+    if (!timestamp) return '未设置';
+    return new Intl.DateTimeFormat('zh-CN', {
+      dateStyle: 'medium', timeStyle: 'medium', timeZone: 'Asia/Shanghai',
+    }).format(new Date(Number(timestamp) * 1000));
   },
 
   render() {
-    if (!this.user) {
-      document.getElementById('app').innerHTML = <div class="flex-center" style="min-height:100vh"><div class="spinner"></div></div>;
-      this.load().then(() => this.render());
+    const root = document.getElementById('app');
+    const data = App.state.me;
+    if (!data) {
+      root.innerHTML = '<main class="page-loading" aria-label="加载中"><span class="spinner"></span></main>';
+      this.load().then(() => this.render()).catch(() => {});
       return;
     }
-
-    const percent = this.getPercent();
-    const used = Number(this.user.traffic_used) || 0;
-    const limit = Number(this.user.traffic_limit) || 0;
-    const remaining = Math.max(limit - used, 0);
-    const upload = Number(this.user.traffic_upload) || 0;
-    const download = Number(this.user.traffic_download) || 0;
-
-    // SVG ring
-    const ringSize = 140;
-    const strokeW = 8;
-    const radius = (ringSize - strokeW) / 2;
+    const { user, allocation, quota, availability } = data;
+    const percent = Math.min(Math.max(Number(quota.percent) || 0, 0), 100);
+    const radius = 62;
     const circumference = 2 * Math.PI * radius;
-    const offset = circumference - (percent / 100) * circumference;
+    const offset = circumference * (1 - percent / 100);
+    const status = availability.usable ? '可用' : quota.expired ? '已过期' : quota.exhausted ? '流量已用尽' : '不可用';
+    const statusClass = availability.usable ? 'badge-active' : 'badge-expired';
+    const initial = (user.username || user.email || 'U').trim().charAt(0).toUpperCase();
+    const links = [
+      ['V2Ray / Shadowrocket', 'v2ray'],
+      ['Clash / Verge / Stash', 'clash'],
+      ['Quantumult X', 'quantumult'],
+      ['Loon', 'loon'],
+      ['Sing-Box / NekoBox', 'singbox'],
+    ];
+    const linksHtml = allocation ? links.map(([label, key]) => {
+      const url = data.subscriptions.links[key];
+      return `<div class="link-row">
+        <div><strong>${label}</strong><code>${App.escape(url)}</code></div>
+        <button class="icon-button" type="button" data-copy-url="${App.escape(url)}" title="复制${label}订阅链接" aria-label="复制${label}订阅链接">⧉</button>
+      </div>`;
+    }).join('') : '<p class="empty-state">当前没有订阅链接</p>';
 
-    const subStatus = this.subscription
-      ? (this.subscription.status === 'active' ? '可用' : '已过期')
-      : '无订阅';
-    const subStatusClass = this.subscription && this.subscription.status === 'active'
-      ? 'badge-active' : 'badge-expired';
-
-    document.getElementById('app').innerHTML = 
+    root.innerHTML = `
       <div class="dashboard-page">
-        <!-- Topbar -->
-        <nav class="topbar">
-          <a href="#" class="topbar-brand" onclick="App.navigate('/')">
-            <div class="topbar-brand-icon">🚀</div>
-            ProxySubscription
+        <header class="topbar">
+          <a class="topbar-brand" href="#/" aria-label="ProxySubscription 首页">
+            <img class="brand-mark" src="/assets/logo.svg" alt=""><span>ProxySubscription</span>
           </a>
+          <span class="topbar-status"><span class="status-dot"></span>服务在线</span>
           <div class="topbar-spacer"></div>
-          <div class="topbar-status">
-            <span class="status-dot"></span> 服务在线
-          </div>
-          <button class="theme-toggle" onclick="App.toggleTheme()" title="切换主题"
-                  style="position:static;width:32px;height:32px;font-size:16px">
-            \
-          </button>
-          <button class="btn btn-ghost btn-sm" onclick="App.logout()">退出登录</button>
-        </nav>
-
-        <div class="shell">
-          <!-- Usage notice -->
-          <div class="usage-notice">
-            <span class="usage-notice-icon">💡</span>
-            部分节点连接不上请更新客户端；自建高速节点，稳定可靠
-          </div>
-
-          <!-- Meter -->
-          <div class="meter-block">
+          <button class="icon-button" type="button" data-theme-icon title="切换主题" aria-label="切换主题">${App.themeIcon()}</button>
+          <button class="btn btn-ghost btn-sm" type="button" id="logout-button">退出登录</button>
+        </header>
+        <main class="shell">
+          <aside class="usage-notice"><span aria-hidden="true">i</span><p>部分节点连接不上时请先更新客户端订阅；自建高速节点会持续维护。</p></aside>
+          <section class="meter-block" aria-labelledby="meter-heading">
             <div class="meter-ring-container">
-              <svg class="meter-ring" width="\" height="\" viewBox="0 0 \ \">
-                <circle class="meter-ring-bg" cx="\" cy="\" r="\"/>
-                <circle class="meter-ring-fill" cx="\" cy="\" r="\"
-                        stroke-dasharray="\" stroke-dashoffset="\"/>
+              <svg class="meter-ring" width="140" height="140" viewBox="0 0 140 140" aria-hidden="true">
+                <circle class="meter-ring-bg" cx="70" cy="70" r="${radius}"></circle>
+                <circle class="meter-ring-fill" cx="70" cy="70" r="${radius}" stroke-dasharray="${circumference}" stroke-dashoffset="${offset}"></circle>
               </svg>
-              <div class="meter-percent">\%</div>
+              <div class="meter-percent">${percent.toFixed(1)}%</div>
             </div>
             <div class="meter-info">
-              <div class="meter-title">流量额度: \ 月度套餐</div>
-              <div class="meter-package">\</div>
+              <h1 class="meter-title" id="meter-heading">流量额度</h1>
+              <p class="meter-package">${App.escape(allocation?.product_name || '暂无套餐')}</p>
               <div class="meter-stats">
-                <div class="meter-stat">
-                  <div class="meter-stat-value" style="color:var(--success)">\</div>
-                  <div class="meter-stat-label">剩余</div>
-                </div>
-                <div class="meter-stat">
-                  <div class="meter-stat-value" style="color:var(--primary)">\</div>
-                  <div class="meter-stat-label">已用</div>
-                </div>
-                <div class="meter-stat">
-                  <div class="meter-stat-value">\%</div>
-                  <div class="meter-stat-label">使用率</div>
-                </div>
-                <div class="meter-stat">
-                  <div class="meter-stat-value">↑\</div>
-                  <div class="meter-stat-label">上传</div>
-                </div>
-                <div class="meter-stat">
-                  <div class="meter-stat-value">↓\</div>
-                  <div class="meter-stat-label">下载</div>
-                </div>
+                <div class="meter-stat"><strong class="meter-stat-value text-success">${this.formatBytes(quota.remaining)}</strong><span class="meter-stat-label">剩余</span></div>
+                <div class="meter-stat"><strong class="meter-stat-value text-primary">${this.formatBytes(quota.used)}</strong><span class="meter-stat-label">已用</span></div>
+                <div class="meter-stat"><strong class="meter-stat-value">${this.formatBytes(quota.quota)}</strong><span class="meter-stat-label">总额</span></div>
               </div>
             </div>
-          </div>
-
-          <!-- Identity -->
-          <div class="identity">
-            <div class="avatar">\</div>
+          </section>
+          <section class="identity" aria-label="用户身份">
+            <div class="avatar">${App.escape(initial)}</div>
             <div class="identity-info">
-              <div class="identity-name">\</div>
-              <div class="identity-handle">@\</div>
-              <div class="identity-badge">⭐ trust level \</div>
+              <h2 class="identity-name">${App.escape(user.username)}</h2>
+              <p class="identity-handle">${App.escape(user.email)}</p>
+              <span class="identity-badge">trust level ${Number(user.trust_level) || 0}</span>
             </div>
-          </div>
-
-          <!-- Subscription Panel -->
-          <div class="panel">
-            <div class="panel-header">
-              <div class="panel-title">
-                📋 订阅详情
-                <span class="badge \">
-                  <span class="badge-dot"></span>\
-                </span>
+            <button class="btn btn-outline btn-sm" type="button" id="checkin-button">每日签到</button>
+          </section>
+          <section class="panel" aria-labelledby="subscription-heading">
+            <header class="panel-header">
+              <h2 class="panel-title" id="subscription-heading">订阅详情 <span class="badge ${statusClass}"><span class="badge-dot"></span>${status}</span></h2>
+              <div class="panel-actions">
+                <button class="btn btn-outline btn-sm" type="button" id="redeem-button">兑换码</button>
+                <button class="btn btn-outline btn-sm" type="button" id="renewal-button">续订</button>
+                <button class="btn btn-outline btn-sm" type="button" id="upgrade-button">升级</button>
               </div>
-              <div style="display:flex;gap:6px">
-                <button class="btn btn-outline btn-sm" id="btn-redeem">🎟️ 兑换码</button>
-                <button class="btn btn-outline btn-sm" id="btn-renew">♻️ 续订</button>
-                <button class="btn btn-outline btn-sm" id="btn-upgrade">⬆️ 升级</button>
-              </div>
-            </div>
+            </header>
             <div class="panel-body">
-              <div class="info-row">
-                <span class="info-label">服务账号</span>
-                <span class="info-value">\-\</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">UUID</span>
-                <span class="info-value" id="uuid-display">\</span>
-                <div class="info-actions">
-                  <button class="btn btn-ghost btn-xs" id="btn-copy-uuid">📋 复制</button>
-                  <button class="btn btn-ghost btn-xs" id="btn-change-uuid">🔄 更换</button>
-                </div>
-              </div>
-              <div class="info-row">
-                <span class="info-label">订阅商品</span>
-                <span class="info-value">\</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">生效时间</span>
-                <span class="info-value">\</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">到期时间</span>
-                <span class="info-value" style="\">
-                  \
-                </span>
-              </div>
-
-              <div style="margin-top:20px">
-                <div class="form-label mb-sm">订阅链接</div>
-                <div class="subscription-link" id="sub-link-clash">
-                  \/sub/\/clash
-                  <button class="btn btn-ghost btn-xs" onclick="DashboardPage.copyLink('sub-link-clash')">📋</button>
-                </div>
-                <div class="subscription-link mt-sm" id="sub-link-v2ray">
-                  \/sub/\/v2ray
-                  <button class="btn btn-ghost btn-xs" onclick="DashboardPage.copyLink('sub-link-v2ray')">📋</button>
-                </div>
-              </div>
+              <dl class="details-list">
+                <div class="row"><dt>服务账号</dt><dd>${App.escape(`${user.username}-${allocation?.id?.slice(0, 10) || 'unclaimed'}`)}</dd></div>
+                <div class="row"><dt>UUID</dt><dd class="uuid-control"><code id="uuid-value">${App.escape(allocation?.uuid || '未分配')}</code>${allocation ? '<button class="btn btn-ghost btn-xs" type="button" id="rotate-button">更换</button>' : ''}</dd></div>
+                <div class="row"><dt>订阅商品</dt><dd>${App.escape(allocation?.product_name || '暂无')}</dd></div>
+                <div class="row"><dt>生效时间</dt><dd>${this.formatDate(allocation?.claimed_at)}</dd></div>
+                <div class="row"><dt>有效期至</dt><dd class="${quota.expired ? 'text-danger' : ''}">${this.formatDate(allocation?.expires_at)}</dd></div>
+              </dl>
+              <section class="subscription-links" aria-labelledby="links-heading">
+                <h3 id="links-heading">订阅链接</h3>${linksHtml}
+              </section>
             </div>
-          </div>
-        </div>
-      </div>
-    ;
-
+          </section>
+        </main>
+      </div>`;
     this.bindEvents();
   },
 
   bindEvents() {
-    document.getElementById('btn-copy-uuid')?.addEventListener('click', () => {
-      const uuid = this.user.uuid;
-      navigator.clipboard.writeText(uuid).then(() => App.toast('UUID 已复制', 'success'));
-    });
-
-    document.getElementById('btn-change-uuid')?.addEventListener('click', async () => {
-      if (!confirm('确定要更换 UUID 吗？更换后需要更新客户端配置。')) return;
+    document.querySelector('[data-theme-icon]').addEventListener('click', () => App.toggleTheme());
+    document.getElementById('logout-button').addEventListener('click', () => App.logout());
+    document.getElementById('redeem-button').addEventListener('click', () => App.showRedeemModal());
+    document.getElementById('renewal-button').addEventListener('click', () => App.showPackageModal('renewal'));
+    document.getElementById('upgrade-button').addEventListener('click', () => App.showPackageModal('upgrade'));
+    document.getElementById('checkin-button').addEventListener('click', async (event) => {
+      event.currentTarget.disabled = true;
       try {
-        const data = await api.changeUUID();
-        this.user.uuid = data.uuid;
-        App.toast('UUID 已更换', 'success');
+        const result = await api.checkin();
+        App.toast(`签到成功，获得 ${this.formatBytes(result.bonus_bytes)}`);
+        await this.load();
         this.render();
-      } catch (err) {
-        App.toast(err.message, 'error');
+      } catch (error) {
+        App.toast(error.message, error.code === 'ALREADY_CHECKED_IN' ? 'warning' : 'error');
+      } finally {
+        if (event.currentTarget.isConnected) event.currentTarget.disabled = false;
       }
     });
-
-    document.getElementById('btn-redeem')?.addEventListener('click', () => {
-      App.showRedeemModal();
+    document.getElementById('rotate-button')?.addEventListener('click', async () => {
+      if (!window.confirm('更换后旧客户端配置会立即失效，确定继续吗？')) return;
+      try {
+        await api.rotateUUID();
+        App.toast('UUID 已更换，请重新复制订阅链接');
+        await this.load();
+        this.render();
+      } catch (error) { App.toast(error.message, 'error'); }
     });
-
-    document.getElementById('btn-renew')?.addEventListener('click', () => {
-      App.showPackageModal('renew');
-    });
-
-    document.getElementById('btn-upgrade')?.addEventListener('click', () => {
-      App.showPackageModal('upgrade');
+    document.querySelectorAll('[data-copy-url]').forEach((button) => {
+      button.addEventListener('click', () => this.copy(button.dataset.copyUrl));
     });
   },
 
-  copyLink(id) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const text = el.textContent.trim();
-    navigator.clipboard.writeText(text).then(() => App.toast('链接已复制', 'success'));
+  async copy(value) {
+    try {
+      await navigator.clipboard.writeText(value);
+      App.toast('订阅链接已复制');
+    } catch {
+      const input = document.createElement('textarea');
+      input.value = value;
+      input.style.position = 'fixed'; input.style.opacity = '0';
+      document.body.appendChild(input); input.select();
+      document.execCommand('copy'); input.remove();
+      App.toast('订阅链接已复制');
+    }
   },
 
   startAutoRefresh() {
-    this.refreshTimer = setInterval(async () => {
-      try {
-        const data = await api.me();
-        this.user = data.user;
-        this.subscription = data.subscription;
-        this.render();
-      } catch { /* silent */ }
-    }, 10000);
+    this.stopAutoRefresh();
+    const interval = Math.max(5000, Number(App.state.me?.config?.statsPollIntervalMs) || 10000);
+    this.refreshTimer = window.setInterval(async () => {
+      if (document.hidden || App.currentPage !== 'dashboard') return;
+      try { await this.load({ silent: true }); this.render(); } catch { /* Keep the last good view. */ }
+    }, interval);
   },
 
   stopAutoRefresh() {
-    if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
-      this.refreshTimer = null;
-    }
+    if (this.refreshTimer) window.clearInterval(this.refreshTimer);
+    this.refreshTimer = null;
   },
 };

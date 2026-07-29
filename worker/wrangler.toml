@@ -5,10 +5,7 @@ compatibility_date = "2025-03-03"
 [[d1_databases]]
 binding = "DB"
 database_name = "proxy-subscription-db"
-database_id = ""
-
-[vars]
-JWT_SECRET = "change-me-in-production"
+database_id = "00000000-0000-0000-0000-000000000000"
 
 [observability]
 enabled = true
