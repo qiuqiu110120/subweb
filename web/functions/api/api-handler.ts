@@ -4,6 +4,7 @@ import {
   handleAdminRequest,
   handleAdminSetupStatus,
 } from "./admin";
+import { getSiteSettings } from "./settings";
 
 export interface Env {
   DB: D1Database;
@@ -64,8 +65,6 @@ interface NodeRow {
 }
 
 const GB = 1024 ** 3;
-const REGISTER_QUOTA = 50 * GB;
-const CHECKIN_BONUS = 100 * 1024 ** 2;
 const TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 const ORDER_TTL_SECONDS = 15 * 60;
 
@@ -205,6 +204,8 @@ async function getProducts(env: Env): Promise<Product[]> {
 }
 
 async function handleRegister(request: Request, env: Env): Promise<Response> {
+  const settings = await getSiteSettings(env.DB);
+  if (!settings.registrationEnabled) return apiError("当前站点已关闭新用户注册", 403, "REGISTRATION_DISABLED");
   const body = await parseBody(request);
   if (body instanceof Response) return body;
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
@@ -222,6 +223,7 @@ async function handleRegister(request: Request, env: Env): Promise<Response> {
   const allocationId = crypto.randomUUID();
   const uuid = crypto.randomUUID();
   const subToken = randomHex();
+  const registrationQuota = Math.round(settings.registrationQuotaGb * GB);
   const passwordHash = await bcrypt.hash(password, 10);
   try {
     await env.DB.batch([
@@ -230,7 +232,8 @@ async function handleRegister(request: Request, env: Env): Promise<Response> {
       ).bind(userId, email, passwordHash, username, now, now),
       env.DB.prepare(
         "INSERT INTO allocations (id, user_id, uuid, sub_token, quota_bytes, product_name, claimed_at, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).bind(allocationId, userId, uuid, subToken, REGISTER_QUOTA, "50GB 注册赠送", now, addMonths(now, 1), now, now),
+      ).bind(allocationId, userId, uuid, subToken, registrationQuota,
+        `${settings.registrationQuotaGb}GB 注册赠送`, now, addMonths(now, 1), now, now),
     ]);
   } catch (error) {
     console.error("register failed", error);
@@ -259,6 +262,7 @@ async function handleMe(env: Env, user: SessionUser, request: Request): Promise<
   ).bind(user.id).first();
   const allocation = await activeAllocation(env, user.id);
   const products = await getProducts(env);
+  const settings = await getSiteSettings(env.DB);
   const currentProduct = allocation?.product_id ? products.find((product) => product.id === allocation.product_id) : null;
   const now = nowSeconds();
   const quota = allocation?.quota_bytes || 0;
@@ -297,7 +301,12 @@ async function handleMe(env: Env, user: SessionUser, request: Request): Promise<
     purchaseOptions,
     renewalOptions,
     subscriptions: { links },
-    config: { products: renewalOptions, statsPollIntervalMs: 10000 },
+    config: {
+      products: renewalOptions,
+      siteName: settings.siteName,
+      siteDescription: settings.siteDescription,
+      statsPollIntervalMs: settings.statsPollIntervalSeconds * 1000,
+    },
   });
 }
 
@@ -388,14 +397,16 @@ async function handleCheckin(env: Env, user: SessionUser): Promise<Response> {
   if (!allocation) return apiError("当前没有有效订阅", 404, "NO_ALLOCATION");
   const date = new Date().toISOString().slice(0, 10);
   const now = nowSeconds();
+  const settings = await getSiteSettings(env.DB);
+  const checkinBonus = settings.checkinBonusMb * 1024 ** 2;
   try {
     await env.DB.batch([
       env.DB.prepare("INSERT INTO checkins (id, user_id, checkin_date, bonus_bytes, created_at) VALUES (?, ?, ?, ?, ?)")
-        .bind(crypto.randomUUID(), user.id, date, CHECKIN_BONUS, now),
+        .bind(crypto.randomUUID(), user.id, date, checkinBonus, now),
       env.DB.prepare("UPDATE allocations SET quota_bytes = quota_bytes + ?, updated_at = ? WHERE id = ? AND is_active = 1")
-        .bind(CHECKIN_BONUS, now, allocation.id),
+        .bind(checkinBonus, now, allocation.id),
     ]);
-    return json({ success: true, bonus_bytes: CHECKIN_BONUS });
+    return json({ success: true, bonus_bytes: checkinBonus });
   } catch {
     return apiError("今天已经签到", 409, "ALREADY_CHECKED_IN");
   }
@@ -508,7 +519,10 @@ export async function handleRequest(request: Request, env: Env, path = new URL(r
     if (!env.DB || !env.JWT_SECRET || env.JWT_SECRET.length < 32) {
       return apiError("服务端尚未完成安全配置", 503, "SERVER_NOT_CONFIGURED");
     }
-    if (request.method === "GET" && path === "/api/site-info") return json({ name: "ProxySubscription", description: "高速稳定的代理订阅服务平台", registrationEnabled: true });
+    if (request.method === "GET" && path === "/api/site-info") {
+      const settings = await getSiteSettings(env.DB);
+      return json({ name: settings.siteName, description: settings.siteDescription, registrationEnabled: settings.registrationEnabled });
+    }
     if (request.method === "GET" && path === "/api/admin/setup-status") return await handleAdminSetupStatus(env);
     if (request.method === "POST" && path === "/api/admin/bootstrap") return await handleAdminBootstrap(request, env);
     if (request.method === "POST" && path === "/api/auth/register") return await handleRegister(request, env);

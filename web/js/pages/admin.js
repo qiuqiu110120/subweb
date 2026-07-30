@@ -13,10 +13,10 @@ const AdminPage = {
     if (this.loading) return;
     this.loading = true;
     try {
-      const [stats, users, nodes, products, codes, orders] = await Promise.all([
-        api.adminStats(), api.adminUsers(query), api.adminNodes(), api.adminProducts(), api.adminCodes(), api.adminOrders(),
+      const [stats, users, nodes, products, codes, orders, traffic, settings] = await Promise.all([
+        api.adminStats(), api.adminUsers(query), api.adminNodes(), api.adminProducts(), api.adminCodes(), api.adminOrders(), api.adminTraffic(), api.adminSettings(),
       ]);
-      this.data = { stats, users, nodes, products, codes, orders, query };
+      this.data = { stats, users, nodes, products, codes, orders, traffic, settings, query };
     } catch (error) {
       if (error.status === 401 || error.status === 403) {
         App.toast('需要管理员权限', 'error');
@@ -60,7 +60,7 @@ const AdminPage = {
     root.innerHTML = `
       <div class="dashboard-page admin-page">
         <header class="topbar">
-          <a class="topbar-brand" href="#/admin"><img class="brand-mark" src="/assets/logo.svg" alt=""><span>管理后台</span></a>
+          <a class="topbar-brand" href="#/admin"><img class="brand-mark" src="/assets/logo.svg" alt=""><span>${App.escape(this.data.settings?.siteName || 'ProxySubscription')} 管理</span></a>
           <span class="badge badge-active">管理员</span>
           <div class="topbar-spacer"></div>
           <a class="btn btn-ghost btn-sm" href="#/">用户中心</a>
@@ -80,9 +80,11 @@ const AdminPage = {
             ${this.statCard('订单数', stats.totalOrders)}
             ${this.statCard('模拟收入', `¥${(stats.revenueCents / 100).toFixed(2)}`)}
             ${this.statCard('未用兑换码', stats.unusedCodes)}
+            ${this.statCard('累计流量', this.formatBytes(stats.totalTrafficBytes))}
+            ${this.statCard('今日签到', stats.checkinsToday)}
           </section>
           <nav class="admin-tabs" aria-label="管理模块">
-            ${[['users', '用户'], ['nodes', '节点'], ['products', '套餐'], ['codes', '兑换码'], ['orders', '订单']]
+            ${[['users', '用户'], ['nodes', '节点'], ['products', '套餐'], ['codes', '兑换码'], ['orders', '订单'], ['traffic', '流量记录'], ['settings', '站点设置']]
               .map(([key, label]) => `<button type="button" class="admin-tab ${this.activeTab === key ? 'is-active' : ''}" data-admin-tab="${key}">${label}</button>`).join('')}
           </nav>
           <section class="admin-workspace">${this.renderActiveTab()}</section>
@@ -100,6 +102,8 @@ const AdminPage = {
     if (this.activeTab === 'products') return this.renderProducts();
     if (this.activeTab === 'codes') return this.renderCodes();
     if (this.activeTab === 'orders') return this.renderOrders();
+    if (this.activeTab === 'traffic') return this.renderTraffic();
+    if (this.activeTab === 'settings') return this.renderSettings();
     return this.renderUsers();
   },
 
@@ -163,6 +167,30 @@ const AdminPage = {
     return `<div class="admin-toolbar"><h2>订单记录</h2><p class="text-muted text-sm">修改退款状态不会自动撤销用户已获得的套餐。</p></div>${this.table(['订单', '用户', '套餐', '类型', '金额', '状态'], rows, '暂无订单')}`;
   },
 
+  renderTraffic() {
+    const rows = this.data.traffic.map((item) => `<tr>
+      <td><strong>${App.escape(item.username || '未知用户')}</strong><small>${App.escape(item.email || item.user_id)}</small></td>
+      <td>${App.escape(item.product_name || item.allocation_id)}</td>
+      <td class="traffic-delta"><span>上行 ${this.formatBytes(item.uplink_delta)}</span><span>下行 ${this.formatBytes(item.downlink_delta)}</span></td>
+      <td>${this.formatDate(item.recorded_at)}</td>
+    </tr>`).join('');
+    return `<div class="admin-toolbar"><h2>流量记录</h2><p class="text-muted text-sm">显示节点通过流量上报接口写入的最近 200 条记录。</p></div>${this.table(['用户', '订阅', '流量', '记录时间'], rows, '暂无流量记录')}`;
+  },
+
+  renderSettings() {
+    const settings = this.data.settings;
+    return `<div class="admin-toolbar"><h2>站点设置</h2><p class="text-muted text-sm">修改后立即对新请求生效；JWT、D1 和节点密钥仍需在 Cloudflare Pages 配置。</p></div>
+      <form id="admin-settings-form" class="settings-form">
+        <div class="form-grid"><div class="form-group"><label class="form-label" for="settings-name">站点名称</label><input class="form-input" id="settings-name" maxlength="50" value="${App.escape(settings.siteName)}" required></div>
+        <div class="form-group"><label class="form-label" for="settings-registration-quota">注册赠送流量（GB）</label><input type="number" min="1" max="102400" step="0.01" class="form-input" id="settings-registration-quota" value="${settings.registrationQuotaGb}" required></div></div>
+        <div class="form-group"><label class="form-label" for="settings-description">站点描述</label><textarea class="form-input settings-textarea" id="settings-description" maxlength="160" required>${App.escape(settings.siteDescription)}</textarea></div>
+        <div class="form-grid"><div class="form-group"><label class="form-label" for="settings-checkin-bonus">签到奖励（MB）</label><input type="number" min="1" max="10240" step="1" class="form-input" id="settings-checkin-bonus" value="${settings.checkinBonusMb}" required></div>
+        <div class="form-group"><label class="form-label" for="settings-poll">仪表盘刷新周期（秒）</label><input type="number" min="5" max="300" step="1" class="form-input" id="settings-poll" value="${settings.statsPollIntervalSeconds}" required></div></div>
+        <label class="check-field"><input type="checkbox" id="settings-registration" ${settings.registrationEnabled ? 'checked' : ''}> 开放新用户注册</label>
+        <p class="form-error" id="admin-settings-error"></p><button class="btn btn-primary" type="submit">保存设置</button>
+      </form>`;
+  },
+
   bindEvents() {
     document.querySelector('[data-theme-icon]').addEventListener('click', () => App.toggleTheme());
     document.getElementById('admin-logout').addEventListener('click', () => App.logout());
@@ -190,6 +218,7 @@ const AdminPage = {
       try { await api.adminUpdateOrder(select.dataset.orderStatus, select.value); App.toast('订单状态已更新'); await this.refresh(); }
       catch (error) { App.toast(error.message, 'error'); await this.refresh(); }
     }));
+    document.getElementById('admin-settings-form')?.addEventListener('submit', (event) => this.submitSettings(event));
   },
 
   async refresh(query = this.data?.query || '') {
@@ -320,6 +349,26 @@ const AdminPage = {
     submit.disabled = true; errorElement.textContent = '';
     try { await action(); App.hideModal(); App.toast(message); await this.refresh(); }
     catch (error) { errorElement.textContent = error.message; }
+    finally { submit.disabled = false; }
+  },
+
+  async submitSettings(event) {
+    event.preventDefault();
+    const submit = event.currentTarget.querySelector('button[type="submit"]');
+    const errorElement = document.getElementById('admin-settings-error');
+    submit.disabled = true; errorElement.textContent = '';
+    try {
+      await api.adminUpdateSettings({
+        siteName: document.getElementById('settings-name').value,
+        siteDescription: document.getElementById('settings-description').value,
+        registrationEnabled: document.getElementById('settings-registration').checked,
+        registrationQuotaGb: Number(document.getElementById('settings-registration-quota').value),
+        checkinBonusMb: Number(document.getElementById('settings-checkin-bonus').value),
+        statsPollIntervalSeconds: Number(document.getElementById('settings-poll').value),
+      });
+      App.toast('站点设置已保存');
+      await this.refresh();
+    } catch (error) { errorElement.textContent = error.message; }
     finally { submit.disabled = false; }
   },
 

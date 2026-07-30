@@ -1,5 +1,7 @@
 const LoginPage = {
   isLogin: true,
+  siteInfo: { name: 'ProxySubscription', description: '高速稳定的代理订阅服务平台', registrationEnabled: true },
+  siteInfoLoaded: false,
 
   render() {
     const mode = this.isLogin ? '登录' : '注册';
@@ -10,8 +12,8 @@ const LoginPage = {
           <img class="login-logo" src="/assets/logo.svg" alt="ProxySubscription">
           <header class="login-brand">
             <p class="login-eyebrow">Proxy Subscription</p>
-            <h1 class="login-title" id="login-title">代理订阅服务</h1>
-            <p class="login-desc">高速稳定的代理订阅服务平台</p>
+            <h1 class="login-title" id="login-title">${App.escape(this.siteInfo.name)}</h1>
+            <p class="login-desc">${App.escape(this.siteInfo.description)}</p>
           </header>
           <div class="login-pills" aria-label="服务特性">
             <span class="pill">VLESS 协议</span><span class="pill">自建节点</span><span class="pill">高速稳定</span>
@@ -33,22 +35,35 @@ const LoginPage = {
             <p class="form-error" id="auth-error" role="alert"></p>
             <button type="submit" class="btn btn-primary" id="auth-submit">${mode}</button>
           </form>
-          <p class="login-footer">
+          ${this.siteInfo.registrationEnabled || !this.isLogin ? `<p class="login-footer">
             ${this.isLogin ? '还没有账号？' : '已有账号？'}
             <button class="text-button" type="button" id="auth-toggle">${this.isLogin ? '立即注册' : '返回登录'}</button>
-          </p>
+          </p>` : ''}
           <p class="login-footer admin-setup-entry" id="admin-setup-entry" hidden>
             尚未创建管理员？<button class="text-button" type="button" id="admin-setup-button">初始化管理员</button>
           </p>
         </section>
       </main>`;
     document.querySelector('[data-theme-icon]').addEventListener('click', () => App.toggleTheme());
-    document.getElementById('auth-toggle').addEventListener('click', () => {
+    document.getElementById('auth-toggle')?.addEventListener('click', () => {
       this.isLogin = !this.isLogin;
       this.render();
     });
     document.getElementById('auth-form').addEventListener('submit', (event) => this.handleSubmit(event));
     this.loadAdminSetupStatus();
+    this.loadSiteInfo();
+  },
+
+  async loadSiteInfo() {
+    if (this.siteInfoLoaded) return;
+    try {
+      const data = await api.siteInfo();
+      this.siteInfoLoaded = true;
+      const changed = data.name !== this.siteInfo.name || data.description !== this.siteInfo.description || data.registrationEnabled !== this.siteInfo.registrationEnabled;
+      this.siteInfo = { ...this.siteInfo, ...data };
+      if (!this.siteInfo.registrationEnabled && !this.isLogin) this.isLogin = true;
+      if (changed && document.getElementById('login-title')) this.render();
+    } catch { this.siteInfoLoaded = true; }
   },
 
   async loadAdminSetupStatus() {

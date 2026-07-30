@@ -1071,6 +1071,10 @@ a {
 .admin-table td strong { display: block; color: var(--ink); }
 .admin-table td small { display: block; margin-top: 2px; color: var(--muted); }
 .admin-table code { color: var(--ink); font-family: "SF Mono", "Cascadia Code", Consolas, monospace; }
+.traffic-delta { white-space: nowrap; }
+.traffic-delta span { display: block; color: var(--muted); font-size: 12px; }
+.settings-form { max-width: 760px; display: grid; gap: 16px; }
+.settings-textarea { min-height: 92px; resize: vertical; }
 .table-actions { white-space: nowrap; }
 .table-select { width: 130px; height: 34px; }
 

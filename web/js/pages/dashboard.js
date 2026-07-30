@@ -15,6 +15,7 @@ const DashboardPage = {
       const data = await api.me();
       App.state.me = data;
       localStorage.setItem('user', JSON.stringify(data.user));
+      if (this.refreshTimer && App.currentPage === 'dashboard') this.startAutoRefresh();
     } catch (error) {
       if (error.status === 401 || error.status === 403) {
         localStorage.removeItem('token');
@@ -51,7 +52,7 @@ const DashboardPage = {
       this.load().then(() => this.render()).catch(() => {});
       return;
     }
-    const { user, allocation, quota, availability } = data;
+    const { user, allocation, quota, availability, config = {} } = data;
     const percent = Math.min(Math.max(Number(quota.percent) || 0, 0), 100);
     const radius = 62;
     const circumference = 2 * Math.PI * radius;
@@ -78,7 +79,7 @@ const DashboardPage = {
       <div class="dashboard-page">
         <header class="topbar">
           <a class="topbar-brand" href="#/" aria-label="ProxySubscription 首页">
-            <img class="brand-mark" src="/assets/logo.svg" alt=""><span>ProxySubscription</span>
+            <img class="brand-mark" src="/assets/logo.svg" alt=""><span>${App.escape(config.siteName || 'ProxySubscription')}</span>
           </a>
           <span class="topbar-status"><span class="status-dot"></span>服务在线</span>
           <div class="topbar-spacer"></div>

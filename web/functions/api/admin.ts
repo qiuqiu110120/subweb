@@ -1,4 +1,10 @@
 import bcrypt from "bcryptjs";
+import {
+  ensureSiteSettingsSchema,
+  getSiteSettings,
+  siteSettingEntries,
+  type SiteSettings,
+} from "./settings";
 
 export interface AdminEnv {
   DB: D1Database;
@@ -184,6 +190,7 @@ async function usersTableExists(env: AdminEnv): Promise<boolean> {
 
 async function ensureBaseSchema(env: AdminEnv): Promise<void> {
   await env.DB.batch(BASE_SCHEMA.map((statement) => env.DB.prepare(statement)));
+  await ensureSiteSettingsSchema(env.DB);
   await env.DB.batch(BASE_INDEXES.map((statement) => env.DB.prepare(statement)));
   await env.DB.batch(DEFAULT_PRODUCTS.map((product) => env.DB.prepare(`
     INSERT OR IGNORE INTO products
@@ -254,7 +261,8 @@ export async function handleAdminBootstrap(request: Request, env: AdminEnv): Pro
 }
 
 async function stats(env: AdminEnv): Promise<Response> {
-  const [users, activeUsers, allocations, nodes, orders, revenue, codes] = await Promise.all([
+  const date = new Date().toISOString().slice(0, 10);
+  const [users, activeUsers, allocations, nodes, orders, revenue, codes, traffic, checkins] = await Promise.all([
     env.DB.prepare("SELECT COUNT(*) AS value FROM users").first<{ value: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS value FROM users WHERE status = 'active'").first<{ value: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS value FROM allocations WHERE is_active = 1 AND (expires_at IS NULL OR expires_at > ?)").bind(now()).first<{ value: number }>(),
@@ -262,6 +270,8 @@ async function stats(env: AdminEnv): Promise<Response> {
     env.DB.prepare("SELECT COUNT(*) AS value FROM orders").first<{ value: number }>(),
     env.DB.prepare("SELECT COALESCE(SUM(amount_cents), 0) AS value FROM orders WHERE status = 'paid'").first<{ value: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS value FROM redeem_codes WHERE is_active = 1 AND used_by IS NULL").first<{ value: number }>(),
+    env.DB.prepare("SELECT COALESCE(SUM(uplink_delta + downlink_delta), 0) AS value FROM traffic_logs").first<{ value: number }>(),
+    env.DB.prepare("SELECT COUNT(*) AS value FROM checkins WHERE checkin_date = ?").bind(date).first<{ value: number }>(),
   ]);
   return json({
     totalUsers: users?.value || 0,
@@ -271,7 +281,71 @@ async function stats(env: AdminEnv): Promise<Response> {
     totalOrders: orders?.value || 0,
     revenueCents: revenue?.value || 0,
     unusedCodes: codes?.value || 0,
+    totalTrafficBytes: traffic?.value || 0,
+    checkinsToday: checkins?.value || 0,
   });
+}
+
+async function listTraffic(env: AdminEnv): Promise<Response> {
+  const result = await env.DB.prepare(`
+    SELECT t.id, t.user_id, u.email, u.username, t.allocation_id,
+           a.product_name, t.uplink_delta, t.downlink_delta, t.recorded_at
+      FROM traffic_logs t
+      LEFT JOIN users u ON u.id = t.user_id
+      LEFT JOIN allocations a ON a.id = t.allocation_id
+     ORDER BY t.recorded_at DESC, t.id DESC
+     LIMIT 200
+  `).all();
+  return json(result.results);
+}
+
+function settingsValues(body: Record<string, unknown>, existing: SiteSettings): SiteSettings {
+  const siteName = typeof body.siteName === "string" ? body.siteName.trim() : existing.siteName;
+  const siteDescription = typeof body.siteDescription === "string" ? body.siteDescription.trim() : existing.siteDescription;
+  const registrationEnabled = typeof body.registrationEnabled === "boolean"
+    ? body.registrationEnabled
+    : existing.registrationEnabled;
+  const registrationQuotaGb = body.registrationQuotaGb === undefined
+    ? existing.registrationQuotaGb
+    : Number(body.registrationQuotaGb);
+  const checkinBonusMb = body.checkinBonusMb === undefined ? existing.checkinBonusMb : Number(body.checkinBonusMb);
+  const statsPollIntervalSeconds = body.statsPollIntervalSeconds === undefined
+    ? existing.statsPollIntervalSeconds
+    : Number(body.statsPollIntervalSeconds);
+  if (siteName.length < 2 || siteName.length > 50) throw new Error("站点名称长度必须为 2 到 50 个字符");
+  if (!siteDescription || siteDescription.length > 160) throw new Error("站点描述长度必须为 1 到 160 个字符");
+  if (!Number.isFinite(registrationQuotaGb) || registrationQuotaGb < 1 || registrationQuotaGb > 102400) {
+    throw new Error("注册赠送流量必须为 1 到 102400GB");
+  }
+  if (!Number.isInteger(checkinBonusMb) || checkinBonusMb < 1 || checkinBonusMb > 10240) {
+    throw new Error("签到奖励必须为 1 到 10240MB 的整数");
+  }
+  if (!Number.isInteger(statsPollIntervalSeconds) || statsPollIntervalSeconds < 5 || statsPollIntervalSeconds > 300) {
+    throw new Error("刷新周期必须为 5 到 300 秒的整数");
+  }
+  return { siteName, siteDescription, registrationEnabled, registrationQuotaGb, checkinBonusMb, statsPollIntervalSeconds };
+}
+
+async function getSettings(env: AdminEnv): Promise<Response> {
+  await ensureSiteSettingsSchema(env.DB);
+  return json(await getSiteSettings(env.DB));
+}
+
+async function updateSettings(request: Request, env: AdminEnv): Promise<Response> {
+  const body = await bodyOf(request);
+  if (body instanceof Response) return body;
+  await ensureSiteSettingsSchema(env.DB);
+  try {
+    const settings = settingsValues(body, await getSiteSettings(env.DB));
+    const timestamp = now();
+    await env.DB.batch(siteSettingEntries(settings).map(([key, value]) => env.DB.prepare(`
+      INSERT INTO site_settings (key, value, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).bind(key, value, timestamp)));
+    return json({ success: true, settings });
+  } catch (exception) {
+    return error(exception instanceof Error ? exception.message : "站点设置无效");
+  }
 }
 
 async function listUsers(request: Request, env: AdminEnv): Promise<Response> {
@@ -572,6 +646,9 @@ export async function handleAdminRequest(
 ): Promise<Response> {
   if (actor.role !== "admin") return error("需要管理员权限", 403, "ADMIN_REQUIRED");
   if (request.method === "GET" && path === "/api/admin/stats") return stats(env);
+  if (request.method === "GET" && path === "/api/admin/traffic") return listTraffic(env);
+  if (request.method === "GET" && path === "/api/admin/settings") return getSettings(env);
+  if (request.method === "PATCH" && path === "/api/admin/settings") return updateSettings(request, env);
   if (request.method === "GET" && path === "/api/admin/users") return listUsers(request, env);
   if (request.method === "POST" && path === "/api/admin/users") return createUser(request, env);
   const userMatch = path.match(/^\/api\/admin\/users\/([^/]+)$/);
