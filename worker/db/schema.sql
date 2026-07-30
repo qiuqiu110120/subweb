@@ -58,6 +58,15 @@ CREATE TABLE IF NOT EXISTS traffic_logs (
 CREATE INDEX IF NOT EXISTS idx_traffic_allocation_time
   ON traffic_logs(allocation_id, recorded_at DESC);
 
+CREATE TABLE IF NOT EXISTS traffic_counters (
+  allocation_id TEXT NOT NULL REFERENCES allocations(id) ON DELETE CASCADE,
+  reporter_id   TEXT NOT NULL,
+  uplink_bytes  INTEGER NOT NULL DEFAULT 0 CHECK (uplink_bytes >= 0),
+  downlink_bytes INTEGER NOT NULL DEFAULT 0 CHECK (downlink_bytes >= 0),
+  updated_at    INTEGER NOT NULL,
+  PRIMARY KEY (allocation_id, reporter_id)
+);
+
 CREATE TABLE IF NOT EXISTS orders (
   id            TEXT PRIMARY KEY,
   user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

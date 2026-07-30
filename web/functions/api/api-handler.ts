@@ -59,6 +59,18 @@ interface NodeRow extends ProxyNode {
   id: string;
 }
 
+interface TrafficAllocation {
+  id: string;
+  user_id: string;
+  quota_bytes: number;
+  used_bytes: number;
+}
+
+interface TrafficCounter {
+  uplink_bytes: number;
+  downlink_bytes: number;
+}
+
 const GB = 1024 ** 3;
 const TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 const ORDER_TTL_SECONDS = 15 * 60;
@@ -771,22 +783,161 @@ function detectSubscriptionFormat(request: Request, explicitFormat?: string): st
   return "v2ray";
 }
 
+function trafficString(body: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    if (typeof body[key] === "string" && String(body[key]).trim()) return String(body[key]).trim();
+  }
+  return "";
+}
+
+function trafficInteger(body: Record<string, unknown>, keys: string[]): { found: boolean; value: number } {
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
+    const raw = body[key];
+    if (typeof raw !== "number" && typeof raw !== "string") return { found: true, value: Number.NaN };
+    if (typeof raw === "string" && !raw.trim()) return { found: true, value: Number.NaN };
+    return { found: true, value: Number(raw) };
+  }
+  return { found: false, value: 0 };
+}
+
+async function trafficAllocation(env: Env, body: Record<string, unknown>): Promise<TrafficAllocation | null> {
+  const fields = "a.id, a.user_id, a.quota_bytes, a.used_bytes";
+  const allocationId = trafficString(body, "allocationId", "allocation_id");
+  if (allocationId) {
+    return env.DB.prepare(`SELECT ${fields} FROM allocations a WHERE a.id = ? AND a.is_active = 1`)
+      .bind(allocationId).first<TrafficAllocation>();
+  }
+  const uuid = trafficString(body, "uuid", "userUuid", "user_uuid");
+  if (uuid) {
+    return env.DB.prepare(`SELECT ${fields} FROM allocations a WHERE a.uuid = ? COLLATE NOCASE AND a.is_active = 1`)
+      .bind(uuid).first<TrafficAllocation>();
+  }
+  const subToken = trafficString(body, "subToken", "sub_token", "subscriptionToken", "subscription_token");
+  if (subToken) {
+    return env.DB.prepare(`SELECT ${fields} FROM allocations a WHERE a.sub_token = ? AND a.is_active = 1`)
+      .bind(subToken).first<TrafficAllocation>();
+  }
+  const email = trafficString(body, "email", "userEmail", "user_email");
+  if (email) {
+    return env.DB.prepare(`SELECT ${fields} FROM allocations a JOIN users u ON u.id = a.user_id WHERE u.email = ? COLLATE NOCASE AND a.is_active = 1`)
+      .bind(email).first<TrafficAllocation>();
+  }
+  const identifier = trafficString(body, "identifier", "user");
+  if (!identifier) return null;
+  return env.DB.prepare(`SELECT ${fields} FROM allocations a JOIN users u ON u.id = a.user_id
+    WHERE a.is_active = 1 AND (a.id = ? OR a.uuid = ? COLLATE NOCASE OR a.sub_token = ? OR u.email = ? COLLATE NOCASE)
+    ORDER BY a.created_at DESC LIMIT 1`)
+    .bind(identifier, identifier, identifier, identifier).first<TrafficAllocation>();
+}
+
+function trafficValues(body: Record<string, unknown>): { mode: "delta" | "total"; uplink: number; downlink: number } | null {
+  const explicitUplinkDelta = trafficInteger(body, ["uplinkDelta", "uplink_delta", "uploadDelta", "upload_delta"]);
+  const explicitDownlinkDelta = trafficInteger(body, ["downlinkDelta", "downlink_delta", "downloadDelta", "download_delta"]);
+  const explicitUsedDelta = trafficInteger(body, ["usedTrafficDelta", "used_traffic_delta"]);
+  const explicitUplinkTotal = trafficInteger(body, ["uplinkTotal", "uplink_total", "uploadTotal", "upload_total"]);
+  const explicitDownlinkTotal = trafficInteger(body, ["downlinkTotal", "downlink_total", "downloadTotal", "download_total"]);
+  const explicitUsedTotal = trafficInteger(body, ["usedTrafficTotal", "used_traffic_total"]);
+  const genericUplink = trafficInteger(body, ["uplink", "upload", "up"]);
+  const genericDownlink = trafficInteger(body, ["downlink", "download", "down"]);
+  const genericUsed = trafficInteger(body, ["usedTraffic", "used_traffic"]);
+  const requestedMode = trafficString(body, "mode").toLowerCase();
+  const hasExplicitTotal = explicitUplinkTotal.found || explicitDownlinkTotal.found || explicitUsedTotal.found;
+  const mode = requestedMode === "total" || requestedMode === "absolute" || (!requestedMode && hasExplicitTotal) ? "total" : "delta";
+  if (requestedMode && !["delta", "increment", "total", "absolute"].includes(requestedMode)) return null;
+
+  const uplinkField = mode === "total"
+    ? (explicitUplinkTotal.found ? explicitUplinkTotal : genericUplink)
+    : (explicitUplinkDelta.found ? explicitUplinkDelta : genericUplink);
+  const downlinkField = mode === "total"
+    ? (explicitDownlinkTotal.found ? explicitDownlinkTotal : genericDownlink)
+    : (explicitDownlinkDelta.found ? explicitDownlinkDelta : genericDownlink);
+  const usedField = mode === "total"
+    ? (explicitUsedTotal.found ? explicitUsedTotal : genericUsed)
+    : (explicitUsedDelta.found ? explicitUsedDelta : genericUsed);
+  if (!uplinkField.found && !downlinkField.found && !usedField.found) return null;
+  const uplink = uplinkField.found ? uplinkField.value : 0;
+  const downlink = downlinkField.found ? downlinkField.value : usedField.value;
+  if (!Number.isSafeInteger(uplink) || !Number.isSafeInteger(downlink) || uplink < 0 || downlink < 0
+    || !Number.isSafeInteger(uplink + downlink)) return null;
+  return { mode, uplink, downlink };
+}
+
+async function trafficResponse(env: Env, allocationId: string, uplinkDelta: number, downlinkDelta: number): Promise<Response> {
+  const allocation = await env.DB.prepare("SELECT quota_bytes, used_bytes FROM allocations WHERE id = ?")
+    .bind(allocationId).first<{ quota_bytes: number; used_bytes: number }>();
+  if (!allocation) return apiError("订阅分配不存在", 404, "ALLOCATION_NOT_FOUND");
+  return json({
+    success: true,
+    allocationId,
+    counted: { uplink: uplinkDelta, downlink: downlinkDelta, total: uplinkDelta + downlinkDelta },
+    usage: {
+      used: allocation.used_bytes,
+      quota: allocation.quota_bytes,
+      remaining: Math.max(allocation.quota_bytes - allocation.used_bytes, 0),
+      exhausted: allocation.used_bytes >= allocation.quota_bytes,
+    },
+  });
+}
+
 async function handleTraffic(request: Request, env: Env): Promise<Response> {
-  if (!env.NODE_API_SECRET || request.headers.get("x-node-secret") !== env.NODE_API_SECRET) return apiError("无权上报流量", 401, "UNAUTHORIZED");
+  const authorization = request.headers.get("authorization") || "";
+  const reportingSecret = request.headers.get("x-node-secret") || (authorization.startsWith("Bearer ") ? authorization.slice(7) : "");
+  if (!env.NODE_API_SECRET || reportingSecret !== env.NODE_API_SECRET) return apiError("无权上报流量", 401, "UNAUTHORIZED");
   const body = await parseBody(request);
   if (body instanceof Response) return body;
-  const allocationId = typeof body.allocationId === "string" ? body.allocationId : "";
-  const uplink = Number(body.uplinkDelta);
-  const downlink = Number(body.downlinkDelta);
-  if (!allocationId || !Number.isSafeInteger(uplink) || !Number.isSafeInteger(downlink) || uplink < 0 || downlink < 0) return apiError("流量数据无效");
-  const allocation = await env.DB.prepare("SELECT id, user_id FROM allocations WHERE id = ? AND is_active = 1").bind(allocationId).first<{ id: string; user_id: string }>();
+  const values = trafficValues(body);
+  if (!values) return apiError("流量数据无效");
+  const allocation = await trafficAllocation(env, body);
   if (!allocation) return apiError("订阅分配不存在", 404, "ALLOCATION_NOT_FOUND");
   const now = nowSeconds();
-  await env.DB.batch([
-    env.DB.prepare("UPDATE allocations SET used_bytes = used_bytes + ?, updated_at = ? WHERE id = ?").bind(uplink + downlink, now, allocation.id),
-    env.DB.prepare("INSERT INTO traffic_logs (user_id, allocation_id, uplink_delta, downlink_delta, recorded_at) VALUES (?, ?, ?, ?, ?)").bind(allocation.user_id, allocation.id, uplink, downlink, now),
-  ]);
-  return json({ success: true });
+  if (values.mode === "delta") {
+    const totalDelta = values.uplink + values.downlink;
+    if (!Number.isSafeInteger(allocation.used_bytes + totalDelta)) return apiError("累计流量超出安全范围");
+    if (totalDelta) {
+      await env.DB.batch([
+        env.DB.prepare("UPDATE allocations SET used_bytes = used_bytes + ?, updated_at = ? WHERE id = ? AND is_active = 1")
+          .bind(totalDelta, now, allocation.id),
+        env.DB.prepare("INSERT INTO traffic_logs (user_id, allocation_id, uplink_delta, downlink_delta, recorded_at) VALUES (?, ?, ?, ?, ?)")
+          .bind(allocation.user_id, allocation.id, values.uplink, values.downlink, now),
+      ]);
+    }
+    return trafficResponse(env, allocation.id, values.uplink, values.downlink);
+  }
+
+  const reporterId = trafficString(body, "reporterId", "reporter_id", "nodeId", "node_id", "source") || "default";
+  if (reporterId.length > 128) return apiError("上报节点标识无效");
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS traffic_counters (
+    allocation_id TEXT NOT NULL REFERENCES allocations(id) ON DELETE CASCADE,
+    reporter_id TEXT NOT NULL,
+    uplink_bytes INTEGER NOT NULL DEFAULT 0 CHECK (uplink_bytes >= 0),
+    downlink_bytes INTEGER NOT NULL DEFAULT 0 CHECK (downlink_bytes >= 0),
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (allocation_id, reporter_id)
+  )`).run();
+  const previous = await env.DB.prepare(
+    "SELECT uplink_bytes, downlink_bytes FROM traffic_counters WHERE allocation_id = ? AND reporter_id = ?",
+  ).bind(allocation.id, reporterId).first<TrafficCounter>();
+  const uplinkDelta = previous && values.uplink >= previous.uplink_bytes ? values.uplink - previous.uplink_bytes : values.uplink;
+  const downlinkDelta = previous && values.downlink >= previous.downlink_bytes ? values.downlink - previous.downlink_bytes : values.downlink;
+  const totalDelta = uplinkDelta + downlinkDelta;
+  if (!Number.isSafeInteger(totalDelta) || !Number.isSafeInteger(allocation.used_bytes + totalDelta)) return apiError("累计流量超出安全范围");
+  const statements = [];
+  if (totalDelta) {
+    statements.push(
+      env.DB.prepare("UPDATE allocations SET used_bytes = used_bytes + ?, updated_at = ? WHERE id = ? AND is_active = 1")
+        .bind(totalDelta, now, allocation.id),
+      env.DB.prepare("INSERT INTO traffic_logs (user_id, allocation_id, uplink_delta, downlink_delta, recorded_at) VALUES (?, ?, ?, ?, ?)")
+        .bind(allocation.user_id, allocation.id, uplinkDelta, downlinkDelta, now),
+    );
+  }
+  statements.push(env.DB.prepare(`INSERT INTO traffic_counters
+    (allocation_id, reporter_id, uplink_bytes, downlink_bytes, updated_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(allocation_id, reporter_id) DO UPDATE SET
+      uplink_bytes = excluded.uplink_bytes, downlink_bytes = excluded.downlink_bytes, updated_at = excluded.updated_at`)
+    .bind(allocation.id, reporterId, values.uplink, values.downlink, now));
+  await env.DB.batch(statements);
+  return trafficResponse(env, allocation.id, uplinkDelta, downlinkDelta);
 }
 
 export async function handleRequest(request: Request, env: Env, path = new URL(request.url).pathname): Promise<Response> {
