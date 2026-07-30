@@ -1075,6 +1075,7 @@ a {
 .traffic-delta span { display: block; color: var(--muted); font-size: 12px; }
 .settings-form { max-width: 760px; display: grid; gap: 16px; }
 .settings-textarea { min-height: 92px; resize: vertical; }
+.code-textarea { font-family: "SF Mono", "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.55; }
 .table-actions { white-space: nowrap; }
 .table-select { width: 130px; height: 34px; }
 

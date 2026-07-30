@@ -5,6 +5,13 @@ import {
   handleAdminSetupStatus,
 } from "./admin";
 import { getSiteSettings } from "./settings";
+import {
+  encodeBase64Utf8,
+  nodeConfig,
+  serializeNodeUri,
+  type NodeConfig,
+  type ProxyNode,
+} from "./node-formats";
 
 export interface Env {
   DB: D1Database;
@@ -48,20 +55,8 @@ interface Allocation {
   updated_at: number;
 }
 
-interface NodeRow {
+interface NodeRow extends ProxyNode {
   id: string;
-  name: string;
-  address: string;
-  port: number;
-  protocol: string;
-  network: string;
-  security: string;
-  path: string;
-  sni: string;
-  public_key: string;
-  short_id: string;
-  fingerprint: string;
-  flow: string;
 }
 
 const GB = 1024 ** 3;
@@ -273,6 +268,7 @@ async function handleMe(env: Env, user: SessionUser, request: Request): Promise<
   const usable = Boolean(allocation?.is_active) && !expired && !exhausted;
   const origin = new URL(request.url).origin;
   const links = allocation ? {
+    universal: `${origin}/sub/${allocation.sub_token}`,
     v2ray: `${origin}/sub/${allocation.sub_token}/v2ray`,
     clash: `${origin}/sub/${allocation.sub_token}/clash`,
     quantumult: `${origin}/sub/${allocation.sub_token}/quantumult`,
@@ -424,76 +420,355 @@ async function subscriptionContext(env: Env, token: string): Promise<{ user: { u
   return { user, allocation, nodes: result.results };
 }
 
-function nodeUri(node: NodeRow, uuid: string): string {
-  const query = new URLSearchParams({ encryption: "none", type: node.network, security: node.security });
-  if (node.path && node.path !== "/") query.set("path", node.path);
-  if (node.sni) query.set("sni", node.sni);
-  if (node.fingerprint) query.set("fp", node.fingerprint);
-  if (node.public_key) query.set("pbk", node.public_key);
-  if (node.short_id) query.set("sid", node.short_id);
-  if (node.flow) query.set("flow", node.flow);
-  return `vless://${uuid}@${node.address}:${node.port}?${query}#${encodeURIComponent(node.name)}`;
-}
-
-function subscriptionHeaders(allocation: Allocation, contentType: string): HeadersInit {
+function subscriptionHeaders(allocation: Allocation, contentType: string, filename: string): HeadersInit {
   return {
     "Content-Type": contentType,
+    "Content-Disposition": `attachment; filename="${filename}"`,
     "Cache-Control": "private, no-store",
     "profile-update-interval": "24",
     "subscription-userinfo": `upload=0; download=${allocation.used_bytes}; total=${allocation.quota_bytes}; expire=${allocation.expires_at || 0}`,
   };
 }
 
-function clashConfig(allocation: Allocation, nodes: NodeRow[]): string {
-  const names = nodes.map((node) => JSON.stringify(node.name));
-  const proxies = nodes.map((node) => {
-    const fields = [
-      `name: ${JSON.stringify(node.name)}`, `type: ${node.protocol}`, `server: ${JSON.stringify(node.address)}`,
-      `port: ${node.port}`, `uuid: ${allocation.uuid}`, "udp: true", `network: ${node.network}`,
-      `tls: ${node.security === "tls" || node.security === "reality"}`,
-    ];
-    if (node.sni) fields.push(`servername: ${JSON.stringify(node.sni)}`);
-    if (node.flow) fields.push(`flow: ${node.flow}`);
-    if (node.network === "ws") fields.push(`ws-opts: {path: ${JSON.stringify(node.path || "/")}}`);
-    if (node.security === "reality") fields.push(`reality-opts: {public-key: ${JSON.stringify(node.public_key)}, short-id: ${JSON.stringify(node.short_id)}}`);
-    return `  - {${fields.join(", ")}}`;
+function uniqueNodeNames(nodes: NodeRow[]): NodeRow[] {
+  const counts = new Map<string, number>();
+  return nodes.map((node) => {
+    const count = (counts.get(node.name) || 0) + 1;
+    counts.set(node.name, count);
+    return count === 1 ? node : { ...node, name: `${node.name} (${count})` };
   });
+}
+
+function configString(config: NodeConfig, key: string, fallback = ""): string {
+  const value = config[key];
+  return typeof value === "string" ? value : value === undefined || value === null ? fallback : String(value);
+}
+
+function configNumber(config: NodeConfig, key: string, fallback = 0): number {
+  const value = Number(config[key]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function configBoolean(config: NodeConfig, key: string): boolean {
+  return config[key] === true || config[key] === 1 || config[key] === "1" || config[key] === "true";
+}
+
+function configStrings(config: NodeConfig, key: string): string[] {
+  const value = config[key];
+  if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
+  return configString(config, key).split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function configNumbers(config: NodeConfig, key: string): number[] {
+  const value = config[key];
+  const values = Array.isArray(value) ? value : configString(config, key).split(",");
+  return values.map(Number).filter(Number.isFinite);
+}
+
+function yamlValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(yamlValue).join(", ")}]`;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value === undefined || value === null ? "" : String(value));
+}
+
+function appendClashTransport(lines: string[], node: NodeRow): void {
+  if (node.network === "ws") {
+    lines.push("    ws-opts:", `      path: ${yamlValue(node.path || "/")}`);
+    if (node.host) lines.push("      headers:", `        Host: ${yamlValue(node.host)}`);
+  }
+  if (node.network === "grpc") {
+    lines.push("    grpc-opts:", `      grpc-service-name: ${yamlValue(node.path || "")}`);
+  }
+  if (node.network === "h2") {
+    lines.push("    h2-opts:", `      path: ${yamlValue(node.path || "/")}`);
+    if (node.host) lines.push(`      host: [${yamlValue(node.host)}]`);
+  }
+  if (node.network === "http") {
+    lines.push("    http-opts:", `      path: [${yamlValue(node.path || "/")}]`);
+    if (node.host) lines.push("      headers:", `        Host: [${yamlValue(node.host)}]`);
+  }
+  if (node.network === "httpupgrade") {
+    lines.push("    http-upgrade-opts:", `      path: ${yamlValue(node.path || "/")}`);
+    if (node.host) lines.push("      headers:", `        Host: ${yamlValue(node.host)}`);
+  }
+}
+
+function appendClashTls(lines: string[], node: NodeRow, config: NodeConfig): void {
+  if (node.sni) lines.push(`    ${node.protocol === "vmess" || node.protocol === "vless" ? "servername" : "sni"}: ${yamlValue(node.sni)}`);
+  if (configBoolean(config, "allow_insecure")) lines.push("    skip-cert-verify: true");
+  const alpn = configStrings(config, "alpn");
+  if (alpn.length) lines.push(`    alpn: ${yamlValue(alpn)}`);
+  if (node.fingerprint && node.security !== "none") lines.push(`    client-fingerprint: ${yamlValue(node.fingerprint)}`);
+  if (node.security === "reality") {
+    lines.push("    reality-opts:", `      public-key: ${yamlValue(node.public_key)}`, `      short-id: ${yamlValue(node.short_id)}`);
+  }
+}
+
+function clashProxy(node: NodeRow, allocation: Allocation): string[] {
+  const config = nodeConfig(node);
+  const clashType = node.protocol === "shadowsocks" ? "ss" : node.protocol;
+  const lines = [
+    `  - name: ${yamlValue(node.name)}`,
+    `    type: ${clashType}`,
+    `    server: ${yamlValue(node.address)}`,
+    `    port: ${node.port}`,
+  ];
+  if (node.protocol === "vmess" || node.protocol === "vless") {
+    lines.push(
+      `    uuid: ${yamlValue(configString(config, "uuid", allocation.uuid))}`,
+      "    udp: true",
+      `    network: ${node.network}`,
+      `    tls: ${node.security !== "none"}`,
+    );
+    if (node.protocol === "vmess") {
+      lines.push(`    alterId: ${configNumber(config, "alter_id")}`, `    cipher: ${yamlValue(configString(config, "cipher", "auto"))}`);
+    }
+    if (node.flow) lines.push(`    flow: ${yamlValue(node.flow)}`);
+    appendClashTls(lines, node, config);
+    appendClashTransport(lines, node);
+    return lines;
+  }
+  if (node.protocol === "shadowsocks") {
+    lines.push(`    cipher: ${yamlValue(configString(config, "method"))}`, `    password: ${yamlValue(configString(config, "password"))}`, "    udp: true");
+    const plugin = configString(config, "plugin");
+    if (plugin) {
+      lines.push(`    plugin: ${yamlValue(plugin)}`);
+      const options = config.plugin_opts;
+      if (options && typeof options === "object" && !Array.isArray(options)) {
+        lines.push("    plugin-opts:");
+        for (const [key, value] of Object.entries(options)) lines.push(`      ${key}: ${yamlValue(value)}`);
+      }
+    }
+    return lines;
+  }
+  if (node.protocol === "trojan") {
+    lines.push(`    password: ${yamlValue(configString(config, "password", allocation.uuid))}`, "    udp: true", `    network: ${node.network}`);
+    appendClashTls(lines, node, config);
+    appendClashTransport(lines, node);
+    return lines;
+  }
+  if (node.protocol === "hysteria2") {
+    lines.push(`    password: ${yamlValue(configString(config, "password", allocation.uuid))}`);
+    appendClashTls(lines, node, config);
+    for (const [field, key] of [["obfs", "obfs"], ["obfs-password", "obfs_password"], ["up", "up"], ["down", "down"]] as const) {
+      const value = configString(config, key); if (value) lines.push(`    ${field}: ${yamlValue(value)}`);
+    }
+    return lines;
+  }
+  if (node.protocol === "tuic") {
+    lines.push(
+      `    uuid: ${yamlValue(configString(config, "uuid", allocation.uuid))}`,
+      `    password: ${yamlValue(configString(config, "password", allocation.uuid))}`,
+      `    congestion-controller: ${yamlValue(configString(config, "congestion_control", "bbr"))}`,
+      `    udp-relay-mode: ${yamlValue(configString(config, "udp_relay_mode", "native"))}`,
+    );
+    appendClashTls(lines, node, config);
+    if (configBoolean(config, "disable_sni")) lines.push("    disable-sni: true");
+    return lines;
+  }
+  if (node.protocol === "wireguard") {
+    const addresses = configStrings(config, "local_address");
+    const ipv4 = addresses.find((address) => !address.includes(":"));
+    const ipv6 = addresses.find((address) => address.includes(":"));
+    lines.push(
+      `    private-key: ${yamlValue(configString(config, "private_key"))}`,
+      `    public-key: ${yamlValue(configString(config, "peer_public_key"))}`,
+      "    udp: true",
+    );
+    if (ipv4) lines.push(`    ip: ${yamlValue(ipv4)}`);
+    if (ipv6) lines.push(`    ipv6: ${yamlValue(ipv6)}`);
+    const reserved = configNumbers(config, "reserved");
+    if (reserved.length) lines.push(`    reserved: ${yamlValue(reserved)}`);
+    const mtu = configNumber(config, "mtu");
+    if (mtu) lines.push(`    mtu: ${mtu}`);
+    const preSharedKey = configString(config, "pre_shared_key");
+    if (preSharedKey) lines.push(`    pre-shared-key: ${yamlValue(preSharedKey)}`);
+    return lines;
+  }
+  if (node.protocol === "socks5") {
+    const username = configString(config, "username");
+    const password = configString(config, "password");
+    if (username) lines.push(`    username: ${yamlValue(username)}`);
+    if (password) lines.push(`    password: ${yamlValue(password)}`);
+    lines.push(`    udp: ${config.version !== "4" && config.udp !== false}`);
+    return lines;
+  }
+  if (node.protocol === "http") {
+    const username = configString(config, "username");
+    const password = configString(config, "password");
+    if (username) lines.push(`    username: ${yamlValue(username)}`);
+    if (password) lines.push(`    password: ${yamlValue(password)}`);
+    lines.push(`    tls: ${configBoolean(config, "tls") || node.security !== "none"}`);
+    appendClashTls(lines, node, config);
+    return lines;
+  }
+  if (node.protocol === "anytls") {
+    lines.push(`    password: ${yamlValue(configString(config, "password", allocation.uuid))}`);
+    appendClashTls(lines, node, config);
+    for (const field of ["idle_session_check_interval", "idle_session_timeout", "min_idle_session"] as const) {
+      const value = config[field]; if (value) lines.push(`    ${field.replace(/_/g, "-")}: ${yamlValue(value)}`);
+    }
+    return lines;
+  }
+  if (node.protocol === "naive") {
+    const username = configString(config, "username");
+    const password = configString(config, "password");
+    if (username) lines.push(`    username: ${yamlValue(username)}`);
+    if (password) lines.push(`    password: ${yamlValue(password)}`);
+    lines.push(`    tls: ${node.security !== "none"}`);
+    appendClashTls(lines, node, config);
+    return lines;
+  }
+  return lines;
+}
+
+function clashConfig(allocation: Allocation, nodes: NodeRow[]): string {
+  const proxies = nodes.flatMap((node) => clashProxy(node, allocation));
+  const groupProxies = nodes.length
+    ? nodes.map((node) => `      - ${yamlValue(node.name)}`)
+    : ["      - DIRECT"];
   return [
-    "mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info", "proxies:",
-    ...(proxies.length ? proxies : ["  []"]), "proxy-groups:",
-    `  - {name: Proxy, type: select, proxies: [${names.join(", ")}]}`, "rules:", "  - MATCH,Proxy", "",
+    "mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info",
+    ...(proxies.length ? ["proxies:", ...proxies] : ["proxies: []"]),
+    "proxy-groups:", "  - name: Proxy", "    type: select", "    proxies:", ...groupProxies,
+    "rules:", "  - MATCH,Proxy", "",
   ].join("\n");
 }
 
+function singBoxTls(node: NodeRow, config: NodeConfig): Record<string, unknown> | undefined {
+  if (node.security === "none") return undefined;
+  const alpn = configStrings(config, "alpn");
+  return {
+    enabled: true,
+    server_name: node.sni || node.address,
+    insecure: configBoolean(config, "allow_insecure") || undefined,
+    alpn: alpn.length ? alpn : undefined,
+    utls: node.fingerprint ? { enabled: true, fingerprint: node.fingerprint } : undefined,
+    reality: node.security === "reality"
+      ? { enabled: true, public_key: node.public_key, short_id: node.short_id }
+      : undefined,
+  };
+}
+
+function singBoxTransport(node: NodeRow): Record<string, unknown> | undefined {
+  if (node.network === "ws") return { type: "ws", path: node.path || "/", headers: node.host ? { Host: node.host } : undefined };
+  if (node.network === "grpc") return { type: "grpc", service_name: node.path || "" };
+  if (node.network === "httpupgrade") return { type: "httpupgrade", path: node.path || "/", headers: node.host ? { Host: node.host } : undefined };
+  if (node.network === "http" || node.network === "h2") return { type: "http", host: node.host ? [node.host] : undefined, path: node.path || "/" };
+  return undefined;
+}
+
+function singBoxOutbound(node: NodeRow, allocation: Allocation): Record<string, unknown> {
+  const config = nodeConfig(node);
+  const base = { tag: node.name, server: node.address, server_port: node.port };
+  if (node.protocol === "vmess") return {
+    ...base, type: "vmess", uuid: configString(config, "uuid", allocation.uuid),
+    security: configString(config, "cipher", "auto"), alter_id: configNumber(config, "alter_id"),
+    tls: singBoxTls(node, config), transport: singBoxTransport(node),
+  };
+  if (node.protocol === "vless") return {
+    ...base, type: "vless", uuid: configString(config, "uuid", allocation.uuid), flow: node.flow || undefined,
+    tls: singBoxTls(node, config), transport: singBoxTransport(node),
+  };
+  if (node.protocol === "shadowsocks") {
+    const pluginOptions = config.plugin_opts && typeof config.plugin_opts === "object" && !Array.isArray(config.plugin_opts)
+      ? Object.entries(config.plugin_opts as NodeConfig).map(([key, value]) => value === true ? key : `${key}=${String(value)}`).join(";")
+      : "";
+    return {
+      ...base, type: "shadowsocks", method: configString(config, "method"), password: configString(config, "password"),
+      plugin: configString(config, "plugin") || undefined, plugin_opts: pluginOptions || undefined,
+    };
+  }
+  if (node.protocol === "trojan") return {
+    ...base, type: "trojan", password: configString(config, "password", allocation.uuid),
+    tls: singBoxTls(node, config), transport: singBoxTransport(node),
+  };
+  if (node.protocol === "hysteria2") return {
+    ...base, type: "hysteria2", password: configString(config, "password", allocation.uuid),
+    up_mbps: configNumber(config, "up") || undefined, down_mbps: configNumber(config, "down") || undefined,
+    obfs: configString(config, "obfs") ? { type: configString(config, "obfs"), password: configString(config, "obfs_password") } : undefined,
+    tls: singBoxTls(node, config),
+  };
+  if (node.protocol === "tuic") return {
+    ...base, type: "tuic", uuid: configString(config, "uuid", allocation.uuid), password: configString(config, "password", allocation.uuid),
+    congestion_control: configString(config, "congestion_control", "bbr"), udp_relay_mode: configString(config, "udp_relay_mode", "native"),
+    tls: singBoxTls(node, config),
+  };
+  if (node.protocol === "wireguard") return {
+    ...base, type: "wireguard", local_address: configStrings(config, "local_address"),
+    private_key: configString(config, "private_key"), peer_public_key: configString(config, "peer_public_key"),
+    pre_shared_key: configString(config, "pre_shared_key") || undefined, reserved: configNumbers(config, "reserved"),
+    mtu: configNumber(config, "mtu", 1420),
+  };
+  if (node.protocol === "socks5") return {
+    ...base, type: "socks", version: configString(config, "version", "5"),
+    username: configString(config, "username") || undefined, password: configString(config, "password") || undefined,
+  };
+  if (node.protocol === "http") return {
+    ...base, type: "http", username: configString(config, "username") || undefined,
+    password: configString(config, "password") || undefined, tls: singBoxTls(node, config),
+  };
+  if (node.protocol === "anytls") return {
+    ...base, type: "anytls", password: configString(config, "password", allocation.uuid),
+    idle_session_check_interval: configString(config, "idle_session_check_interval") || undefined,
+    idle_session_timeout: configString(config, "idle_session_timeout") || undefined,
+    min_idle_session: configNumber(config, "min_idle_session") || undefined, tls: singBoxTls(node, config),
+  };
+  if (node.protocol === "naive") return {
+    ...base, type: "naive", username: configString(config, "username") || undefined,
+    password: configString(config, "password") || undefined, network: configString(config, "protocol", "https"),
+    tls: singBoxTls(node, config),
+  };
+  return { ...base, type: node.protocol };
+}
+
 function singBoxConfig(allocation: Allocation, nodes: NodeRow[]) {
-  const outbounds = nodes.map((node) => ({
-    type: node.protocol,
-    tag: node.name,
-    server: node.address,
-    server_port: node.port,
-    uuid: allocation.uuid,
-    flow: node.flow || undefined,
-    tls: node.security === "none" ? undefined : {
-      enabled: true,
-      server_name: node.sni || node.address,
-      utls: { enabled: true, fingerprint: node.fingerprint || "chrome" },
-      reality: node.security === "reality" ? { enabled: true, public_key: node.public_key, short_id: node.short_id } : undefined,
-    },
-    transport: node.network === "ws" ? { type: "ws", path: node.path || "/" } : undefined,
-  }));
-  return { log: { level: "info" }, inbounds: [{ type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: 2080 }], outbounds };
+  const nodeOutbounds = nodes.map((node) => singBoxOutbound(node, allocation));
+  const nodeTags = nodeOutbounds.map((outbound) => outbound.tag);
+  const outbounds = nodeTags.length
+    ? [{ type: "selector", tag: "Proxy", outbounds: nodeTags }, ...nodeOutbounds]
+    : [{ type: "direct", tag: "Proxy" }];
+  return {
+    log: { level: "info" },
+    inbounds: [{ type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: 2080 }],
+    outbounds,
+    route: { auto_detect_interface: true, final: "Proxy" },
+  };
 }
 
 async function handleSubscription(env: Env, token: string, format: string): Promise<Response> {
   const context = await subscriptionContext(env, token);
   if (context instanceof Response) return context;
-  const { allocation, nodes, user } = context;
-  if (format === "clash") return new Response(clashConfig(allocation, nodes), { headers: subscriptionHeaders(allocation, "text/yaml; charset=utf-8") });
-  if (format === "v2ray") return new Response(JSON.stringify({ version: 1, remarks: user.username, servers: nodes.map((node) => nodeUri(node, allocation.uuid)) }), { headers: subscriptionHeaders(allocation, "application/json; charset=utf-8") });
-  if (format === "singbox") return new Response(JSON.stringify(singBoxConfig(allocation, nodes)), { headers: subscriptionHeaders(allocation, "application/json; charset=utf-8") });
-  if (format === "loon") return new Response(nodes.map((node) => `${node.name} = vless,${node.address},${node.port},username=${allocation.uuid},transport=${node.network},tls=${node.security !== "none"}`).join("\n"), { headers: subscriptionHeaders(allocation, "text/plain; charset=utf-8") });
-  if (format === "quantumult") return new Response(nodes.map((node) => `vless=${node.address}:${node.port}, method=none, password=${allocation.uuid}, obfs=${node.network}, tls-verification=true, tag=${node.name}`).join("\n"), { headers: subscriptionHeaders(allocation, "text/plain; charset=utf-8") });
+  const { allocation } = context;
+  const nodes = uniqueNodeNames(context.nodes);
+  if (format === "clash") return new Response(clashConfig(allocation, nodes), { headers: subscriptionHeaders(allocation, "text/yaml; charset=utf-8", "clash.yaml") });
+  if (format === "v2ray") {
+    const subscription = nodes.map((node) => serializeNodeUri(node, allocation.uuid)).join("\n");
+    return new Response(encodeBase64Utf8(subscription), { headers: subscriptionHeaders(allocation, "text/plain; charset=utf-8", "v2ray.txt") });
+  }
+  if (format === "singbox") return new Response(JSON.stringify(singBoxConfig(allocation, nodes)), { headers: subscriptionHeaders(allocation, "application/json; charset=utf-8", "sing-box.json") });
+  if (format === "loon" || format === "quantumult") {
+    const subscription = nodes.map((node) => serializeNodeUri(node, allocation.uuid)).join("\n");
+    return new Response(subscription, { headers: subscriptionHeaders(allocation, "text/plain; charset=utf-8", `${format}.conf`) });
+  }
   return apiError("不支持的订阅格式", 404, "FORMAT_NOT_FOUND");
+}
+
+function detectSubscriptionFormat(request: Request, explicitFormat?: string): string {
+  const requested = explicitFormat || new URL(request.url).searchParams.get("target") || "";
+  const normalized = requested.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (["clash", "clashmeta", "mihomo", "stash"].includes(normalized)) return "clash";
+  if (["singbox", "nekobox"].includes(normalized)) return "singbox";
+  if (normalized === "quantumult" || normalized === "quantumultx") return "quantumult";
+  if (normalized === "loon") return "loon";
+  if (normalized === "v2ray" || normalized === "v2rayn" || normalized === "shadowrocket") return "v2ray";
+  if (explicitFormat || requested) return requested.toLowerCase();
+  const userAgent = (request.headers.get("user-agent") || "").toLowerCase();
+  if (/clash|mihomo|stash/.test(userAgent)) return "clash";
+  if (/sing-?box|nekobox/.test(userAgent)) return "singbox";
+  if (userAgent.includes("quantumult")) return "quantumult";
+  if (userAgent.includes("loon")) return "loon";
+  return "v2ray";
 }
 
 async function handleTraffic(request: Request, env: Env): Promise<Response> {
@@ -527,8 +802,8 @@ export async function handleRequest(request: Request, env: Env, path = new URL(r
     if (request.method === "POST" && path === "/api/admin/bootstrap") return await handleAdminBootstrap(request, env);
     if (request.method === "POST" && path === "/api/auth/register") return await handleRegister(request, env);
     if (request.method === "POST" && path === "/api/auth/login") return await handleLogin(request, env);
-    const subMatch = request.method === "GET" ? path.match(/^\/sub\/([a-f0-9]{48})\/([a-z0-9-]+)$/i) : null;
-    if (subMatch) return await handleSubscription(env, subMatch[1], subMatch[2].toLowerCase());
+    const subMatch = request.method === "GET" ? path.match(/^\/sub\/([a-f0-9]{48})(?:\/([a-z0-9-]+))?$/i) : null;
+    if (subMatch) return await handleSubscription(env, subMatch[1], detectSubscriptionFormat(request, subMatch[2]));
     if (request.method === "POST" && path === "/api/traffic") return await handleTraffic(request, env);
 
     const user = await authenticate(request, env);

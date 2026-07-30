@@ -5,6 +5,12 @@ import {
   siteSettingEntries,
   type SiteSettings,
 } from "./settings";
+import {
+  SUPPORTED_PROTOCOLS,
+  extractNodeUris,
+  normalizeConfigJson,
+  parseNodeUri,
+} from "./node-formats";
 
 export interface AdminEnv {
   DB: D1Database;
@@ -108,11 +114,13 @@ const BASE_SCHEMA = [
     network TEXT NOT NULL DEFAULT 'ws',
     security TEXT NOT NULL DEFAULT 'tls',
     path TEXT NOT NULL DEFAULT '/',
+    host TEXT NOT NULL DEFAULT '',
     sni TEXT NOT NULL DEFAULT '',
     public_key TEXT NOT NULL DEFAULT '',
     short_id TEXT NOT NULL DEFAULT '',
     fingerprint TEXT NOT NULL DEFAULT 'chrome',
     flow TEXT NOT NULL DEFAULT '',
+    config_json TEXT NOT NULL DEFAULT '{}',
     sort_order INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
     created_at INTEGER NOT NULL
@@ -206,6 +214,16 @@ async function ensureAdminSchema(env: AdminEnv): Promise<void> {
     "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin'))",
   ).run();
   await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_users_role_status ON users(role, status)").run();
+}
+
+async function ensureNodeSchema(env: AdminEnv): Promise<void> {
+  const columns = await env.DB.prepare("PRAGMA table_info(nodes)").all<{ name: string }>();
+  if (!columns.results.some((column) => column.name === "host")) {
+    await env.DB.prepare("ALTER TABLE nodes ADD COLUMN host TEXT NOT NULL DEFAULT ''").run();
+  }
+  if (!columns.results.some((column) => column.name === "config_json")) {
+    await env.DB.prepare("ALTER TABLE nodes ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'").run();
+  }
 }
 
 export async function handleAdminSetupStatus(env: AdminEnv): Promise<Response> {
@@ -513,15 +531,139 @@ function nodeValues(body: Record<string, unknown>, existing?: Record<string, unk
   const security = value("security", "tls");
   if (!name || !address) throw new Error("节点名称和地址不能为空");
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("节点端口无效");
-  if (protocol !== "vless") throw new Error("当前仅支持 VLESS 协议");
-  if (!["ws", "tcp", "grpc"].includes(network)) throw new Error("传输协议无效");
+  if (!(SUPPORTED_PROTOCOLS as readonly string[]).includes(protocol)) throw new Error("节点协议无效");
+  if (!["ws", "tcp", "udp", "grpc", "http", "h2", "httpupgrade"].includes(network)) throw new Error("传输协议无效");
   if (!["none", "tls", "reality"].includes(security)) throw new Error("安全类型无效");
   return {
     name, address, port, protocol, network, security,
-    path: value("path", "/"), sni: value("sni"), public_key: value("public_key"),
+    path: value("path", "/"), host: value("host"), sni: value("sni"), public_key: value("public_key"),
     short_id: value("short_id"), fingerprint: value("fingerprint", "chrome"), flow: value("flow"),
+    config_json: normalizeConfigJson(body.config_json ?? body.config, String(existing?.config_json ?? "{}")),
     sort_order: integer("sort_order"), is_active: body.is_active === undefined ? Number(existing?.is_active ?? 1) : (body.is_active ? 1 : 0),
   };
+}
+
+const MAX_NODE_IMPORT_SIZE = 256 * 1024;
+const MAX_NODE_IMPORT_COUNT = 100;
+
+function stableJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, stableJson(item)]),
+    );
+  }
+  return value;
+}
+
+function nodeIdentity(node: ReturnType<typeof nodeValues>): string {
+  return JSON.stringify([
+    node.name,
+    node.protocol, node.address.toLowerCase(), node.port, node.network, node.security,
+    node.path, node.host.toLowerCase(), node.sni.toLowerCase(), node.public_key, node.short_id,
+    node.fingerprint, node.flow, stableJson(JSON.parse(node.config_json)), node.is_active,
+  ]);
+}
+
+function shouldFetchNodeSource(source: string, sourceType: string): boolean {
+  if (sourceType === "content") return false;
+  if (sourceType === "url") return true;
+  if (!/^https?:\/\/\S+$/i.test(source)) return false;
+  try {
+    const url = new URL(source);
+    const directProxy = Boolean(url.username || url.password || url.hash)
+      || Boolean(url.port && url.pathname === "/" && !url.search);
+    return !directProxy;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveNodeImportSource(source: string, sourceType: string): Promise<string> {
+  if (!shouldFetchNodeSource(source, sourceType)) return source;
+  if (!/^https?:\/\/\S+$/i.test(source)) throw new Error("订阅地址必须使用 HTTP(S)");
+  let response: Response;
+  try {
+    response = await fetch(source, {
+      headers: { Accept: "text/plain, text/yaml, application/yaml, */*", "User-Agent": "ProxySubscription-Importer/1.0" },
+      redirect: "follow",
+    });
+  } catch {
+    throw new Error("订阅地址读取失败");
+  }
+  if (!response.ok) throw new Error(`订阅地址返回 HTTP ${response.status}`);
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_NODE_IMPORT_SIZE) {
+    throw new Error("订阅内容超过 256KB 限制");
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > MAX_NODE_IMPORT_SIZE) {
+      await reader.cancel();
+      throw new Error("订阅内容超过 256KB 限制");
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+async function importNodes(request: Request, env: AdminEnv): Promise<Response> {
+  const body = await bodyOf(request); if (body instanceof Response) return body;
+  const source = typeof body.source === "string" ? body.source.trim() : "";
+  const sourceType = ["auto", "content", "url"].includes(String(body.sourceType)) ? String(body.sourceType) : "auto";
+  if (!source) return error("请输入节点分享链接、Base64 订阅内容或订阅地址");
+  if (source.length > MAX_NODE_IMPORT_SIZE) return error("导入内容超过 256KB 限制");
+  try {
+    const content = await resolveNodeImportSource(source, sourceType);
+    const uris = extractNodeUris(content);
+    if (!uris.length) return error("没有识别到支持的节点，请检查分享链接或订阅内容");
+    if (uris.length > MAX_NODE_IMPORT_COUNT) return error(`单次最多导入 ${MAX_NODE_IMPORT_COUNT} 个节点`);
+
+    const parsedNodes: ReturnType<typeof nodeValues>[] = [];
+    let invalid = 0;
+    for (const uri of uris) {
+      try { parsedNodes.push(nodeValues(parseNodeUri(uri) as unknown as Record<string, unknown>)); } catch { invalid += 1; }
+    }
+    if (!parsedNodes.length) return error("识别到的节点参数均无效");
+
+    const existing = await env.DB.prepare("SELECT * FROM nodes").all<Record<string, unknown>>();
+    const identities = new Set(existing.results.map((node) => nodeIdentity(nodeValues({}, node))));
+    let sortOrder = existing.results.reduce((maximum, node) => Math.max(maximum, Number(node.sort_order) || 0), 0);
+    const imported: Array<ReturnType<typeof nodeValues> & { id: string }> = [];
+    let skipped = 0;
+    for (const node of parsedNodes) {
+      const identity = nodeIdentity(node);
+      if (identities.has(identity)) { skipped += 1; continue; }
+      identities.add(identity);
+      imported.push({ ...node, id: crypto.randomUUID(), sort_order: ++sortOrder });
+    }
+    if (imported.length) {
+      await env.DB.batch(imported.map((node) => env.DB.prepare(`
+        INSERT INTO nodes (id, name, address, port, protocol, network, security, path, host, sni,
+          public_key, short_id, fingerprint, flow, config_json, sort_order, is_active, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(node.id, node.name, node.address, node.port, node.protocol, node.network, node.security,
+        node.path, node.host, node.sni, node.public_key, node.short_id, node.fingerprint, node.flow,
+        node.config_json, node.sort_order, node.is_active, now())));
+    }
+    return json({ success: true, imported: imported.length, skipped, invalid }, imported.length ? 201 : 200);
+  } catch (exception) {
+    return error(exception instanceof Error ? exception.message : "节点导入失败");
+  }
 }
 
 async function createNode(request: Request, env: AdminEnv): Promise<Response> {
@@ -530,12 +672,12 @@ async function createNode(request: Request, env: AdminEnv): Promise<Response> {
     const node = nodeValues(body);
     const id = crypto.randomUUID();
     await env.DB.prepare(`
-      INSERT INTO nodes (id, name, address, port, protocol, network, security, path, sni,
-        public_key, short_id, fingerprint, flow, sort_order, is_active, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO nodes (id, name, address, port, protocol, network, security, path, host, sni,
+        public_key, short_id, fingerprint, flow, config_json, sort_order, is_active, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(id, node.name, node.address, node.port, node.protocol, node.network, node.security,
-      node.path, node.sni, node.public_key, node.short_id, node.fingerprint, node.flow,
-      node.sort_order, node.is_active, now()).run();
+      node.path, node.host, node.sni, node.public_key, node.short_id, node.fingerprint, node.flow,
+      node.config_json, node.sort_order, node.is_active, now()).run();
     return json({ success: true, id }, 201);
   } catch (exception) { return error(exception instanceof Error ? exception.message : "节点数据无效"); }
 }
@@ -547,10 +689,10 @@ async function updateNode(request: Request, env: AdminEnv, id: string): Promise<
   try {
     const node = nodeValues(body, existing);
     await env.DB.prepare(`UPDATE nodes SET name=?, address=?, port=?, protocol=?, network=?, security=?,
-      path=?, sni=?, public_key=?, short_id=?, fingerprint=?, flow=?, sort_order=?, is_active=? WHERE id=?`)
+      path=?, host=?, sni=?, public_key=?, short_id=?, fingerprint=?, flow=?, config_json=?, sort_order=?, is_active=? WHERE id=?`)
       .bind(node.name, node.address, node.port, node.protocol, node.network, node.security,
-        node.path, node.sni, node.public_key, node.short_id, node.fingerprint, node.flow,
-        node.sort_order, node.is_active, id).run();
+        node.path, node.host, node.sni, node.public_key, node.short_id, node.fingerprint, node.flow,
+        node.config_json, node.sort_order, node.is_active, id).run();
     return json({ success: true });
   } catch (exception) { return error(exception instanceof Error ? exception.message : "节点数据无效"); }
 }
@@ -659,12 +801,23 @@ export async function handleAdminRequest(
   if (request.method === "DELETE" && allocationMatch) return revokeAllocation(env, allocationMatch[1]);
 
   if (request.method === "GET" && path === "/api/admin/nodes") {
+    await ensureNodeSchema(env);
     const result = await env.DB.prepare("SELECT * FROM nodes ORDER BY sort_order, name").all();
     return json(result.results);
   }
-  if (request.method === "POST" && path === "/api/admin/nodes") return createNode(request, env);
+  if (request.method === "POST" && path === "/api/admin/nodes") {
+    await ensureNodeSchema(env);
+    return createNode(request, env);
+  }
+  if (request.method === "POST" && path === "/api/admin/nodes/import") {
+    await ensureNodeSchema(env);
+    return importNodes(request, env);
+  }
   const nodeMatch = path.match(/^\/api\/admin\/nodes\/([^/]+)$/);
-  if (request.method === "PATCH" && nodeMatch) return updateNode(request, env, nodeMatch[1]);
+  if (request.method === "PATCH" && nodeMatch) {
+    await ensureNodeSchema(env);
+    return updateNode(request, env, nodeMatch[1]);
+  }
   if (request.method === "DELETE" && nodeMatch) {
     await env.DB.prepare("UPDATE nodes SET is_active = 0 WHERE id = ?").bind(nodeMatch[1]).run();
     return json({ success: true });

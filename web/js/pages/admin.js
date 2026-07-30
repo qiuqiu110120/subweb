@@ -133,7 +133,7 @@ const AdminPage = {
       <td><span class="badge ${node.is_active ? 'badge-active' : 'badge-expired'}">${node.is_active ? '启用' : '停用'}</span></td>
       <td class="table-actions"><button class="btn btn-ghost btn-xs" data-node-edit="${node.id}">编辑</button>${node.is_active ? `<button class="btn btn-ghost btn-xs text-danger" data-node-delete="${node.id}">停用</button>` : ''}</td>
     </tr>`).join('');
-    return `<div class="admin-toolbar"><h2>节点管理</h2><button class="btn btn-outline btn-sm" id="node-create">新增节点</button></div>${this.table(['节点', '服务器', '协议', '状态', '操作'], rows, '暂无节点')}`;
+    return `<div class="admin-toolbar"><h2>节点管理</h2><div class="table-actions"><button class="btn btn-outline btn-sm" id="node-import">一键导入</button><button class="btn btn-outline btn-sm" id="node-create">新增节点</button></div></div>${this.table(['节点', '服务器', '协议', '状态', '操作'], rows, '暂无节点')}`;
   },
 
   renderProducts() {
@@ -205,6 +205,7 @@ const AdminPage = {
     document.querySelectorAll('[data-user-plan]').forEach((button) => button.addEventListener('click', () => this.openAssignment(button.dataset.userPlan)));
     document.querySelectorAll('[data-user-allocation]').forEach((button) => button.addEventListener('click', () => this.openAllocation(button.dataset.userAllocation)));
     document.getElementById('user-create')?.addEventListener('click', () => this.openUser());
+    document.getElementById('node-import')?.addEventListener('click', () => this.openNodeImport());
     document.getElementById('node-create')?.addEventListener('click', () => this.openNode());
     document.querySelectorAll('[data-node-edit]').forEach((button) => button.addEventListener('click', () => this.openNode(button.dataset.nodeEdit)));
     document.querySelectorAll('[data-node-delete]').forEach((button) => button.addEventListener('click', () => this.deactivate('node', button.dataset.nodeDelete)));
@@ -286,28 +287,49 @@ const AdminPage = {
   openNode(id) {
     const node = id ? this.data.nodes.find((item) => item.id === id) : null;
     const value = (key, fallback = '') => App.escape(node?.[key] ?? fallback);
+    const protocols = ['vmess','vless','shadowsocks','trojan','hysteria2','wireguard','socks5','http','tuic','anytls','naive'];
+    let configJson = '{}';
+    try { configJson = JSON.stringify(JSON.parse(node?.config_json || '{}'), null, 2); } catch { configJson = '{}'; }
     App.showModal(node ? '编辑节点' : '新增节点', `<form id="admin-node-form"><div class="form-grid">
       <div class="form-group"><label class="form-label" for="node-name">名称</label><input class="form-input" id="node-name" value="${value('name')}" required></div>
       <div class="form-group"><label class="form-label" for="node-address">服务器地址</label><input class="form-input" id="node-address" value="${value('address')}" required></div>
       <div class="form-group"><label class="form-label" for="node-port">端口</label><input type="number" min="1" max="65535" class="form-input" id="node-port" value="${value('port', 443)}" required></div>
-      <div class="form-group"><label class="form-label" for="node-network">传输</label><select class="form-input" id="node-network">${['ws','tcp','grpc'].map((item) => `<option ${value('network','ws') === item ? 'selected' : ''}>${item}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label" for="node-protocol">协议</label><select class="form-input" id="node-protocol">${protocols.map((item) => `<option value="${item}" ${value('protocol','vless') === item ? 'selected' : ''}>${item}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label" for="node-network">传输</label><select class="form-input" id="node-network">${['ws','tcp','udp','grpc','http','h2','httpupgrade'].map((item) => `<option ${value('network','ws') === item ? 'selected' : ''}>${item}</option>`).join('')}</select></div>
       <div class="form-group"><label class="form-label" for="node-security">安全</label><select class="form-input" id="node-security">${['none','tls','reality'].map((item) => `<option ${value('security','tls') === item ? 'selected' : ''}>${item}</option>`).join('')}</select></div>
-      <div class="form-group"><label class="form-label" for="node-sni">SNI</label><input class="form-input" id="node-sni" value="${value('sni')}"></div></div>
+      <div class="form-group"><label class="form-label" for="node-sni">SNI</label><input class="form-input" id="node-sni" value="${value('sni')}"></div>
+      <div class="form-group"><label class="form-label" for="node-host">Host</label><input class="form-input" id="node-host" value="${value('host')}"></div></div>
       <div class="form-group"><label class="form-label" for="node-path">Path / Service name</label><input class="form-input" id="node-path" value="${value('path','/')}"></div>
+      <div class="form-group"><label class="form-label" for="node-config">协议参数（JSON）</label><textarea class="form-input settings-textarea code-textarea" id="node-config" spellcheck="false">${App.escape(configJson)}</textarea></div>
       <div class="form-grid"><div class="form-group"><label class="form-label" for="node-public-key">Reality public key</label><input class="form-input" id="node-public-key" value="${value('public_key')}"></div><div class="form-group"><label class="form-label" for="node-short-id">Reality short ID</label><input class="form-input" id="node-short-id" value="${value('short_id')}"></div>
       <div class="form-group"><label class="form-label" for="node-fingerprint">指纹</label><input class="form-input" id="node-fingerprint" value="${value('fingerprint','chrome')}"></div><div class="form-group"><label class="form-label" for="node-flow">Flow</label><input class="form-input" id="node-flow" value="${value('flow')}"></div>
       <div class="form-group"><label class="form-label" for="node-sort">排序</label><input type="number" class="form-input" id="node-sort" value="${value('sort_order',0)}"></div><label class="check-field"><input type="checkbox" id="node-active" ${node?.is_active === 0 ? '' : 'checked'}> 启用节点</label></div>
       <p class="form-error" id="admin-form-error"></p><button class="btn btn-primary" type="submit">保存节点</button></form>`, () => {
       document.getElementById('admin-node-form').addEventListener('submit', (event) => this.submitModal(event, () => {
         const payload = { name: document.getElementById('node-name').value, address: document.getElementById('node-address').value,
-          port: Number(document.getElementById('node-port').value), protocol: 'vless', network: document.getElementById('node-network').value,
+          port: Number(document.getElementById('node-port').value), protocol: document.getElementById('node-protocol').value,
+          network: document.getElementById('node-network').value,
           security: document.getElementById('node-security').value, sni: document.getElementById('node-sni').value,
-          path: document.getElementById('node-path').value, public_key: document.getElementById('node-public-key').value,
+          path: document.getElementById('node-path').value, host: document.getElementById('node-host').value,
+          public_key: document.getElementById('node-public-key').value,
           short_id: document.getElementById('node-short-id').value, fingerprint: document.getElementById('node-fingerprint').value,
           flow: document.getElementById('node-flow').value, sort_order: Number(document.getElementById('node-sort').value),
-          is_active: document.getElementById('node-active').checked };
+          config_json: document.getElementById('node-config').value, is_active: document.getElementById('node-active').checked };
         return node ? api.adminUpdateNode(id, payload) : api.adminCreateNode(payload);
       }, '节点已保存'));
+    });
+  },
+
+  openNodeImport() {
+    App.showModal('一键导入节点', `<form id="admin-node-import-form">
+      <div class="form-group"><label class="form-label" for="node-import-type">导入方式</label><select class="form-input" id="node-import-type"><option value="auto">自动识别</option><option value="content">节点链接 / Base64 内容</option><option value="url">远程订阅地址</option></select></div>
+      <div class="form-group"><label class="form-label" for="node-import-source">节点分享链接或订阅</label><textarea class="form-input settings-textarea code-textarea" id="node-import-source" rows="9" placeholder="VMess、VLESS、Shadowsocks、Trojan、Hysteria2、WireGuard、SOCKS、HTTP、TUIC、AnyTLS、NaiveProxy" required></textarea></div>
+      <p class="dialog-summary"><span>单次最多导入 100 个节点；仅完整配置完全一致的节点会自动跳过，分享链接中的协议凭据和传输参数会完整保存。</span></p>
+      <p class="form-error" id="admin-form-error"></p><button class="btn btn-primary" type="submit">开始导入</button></form>`, () => {
+      document.getElementById('admin-node-import-form').addEventListener('submit', (event) => this.submitModal(event, async () => {
+        const result = await api.adminImportNodes(document.getElementById('node-import-source').value, document.getElementById('node-import-type').value);
+        return { ...result, message: `已导入 ${result.imported} 个节点，跳过 ${result.skipped} 个重复节点${result.invalid ? `，${result.invalid} 个无效节点` : ''}` };
+      }, (result) => result.message));
     });
   },
 
@@ -347,7 +369,7 @@ const AdminPage = {
     const submit = event.currentTarget.querySelector('button[type="submit"]');
     const errorElement = document.getElementById('admin-form-error');
     submit.disabled = true; errorElement.textContent = '';
-    try { await action(); App.hideModal(); App.toast(message); await this.refresh(); }
+    try { const result = await action(); App.hideModal(); App.toast(typeof message === 'function' ? message(result) : message); await this.refresh(); }
     catch (error) { errorElement.textContent = error.message; }
     finally { submit.disabled = false; }
   },

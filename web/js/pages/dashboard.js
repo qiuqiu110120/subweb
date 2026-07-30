@@ -61,6 +61,7 @@ const DashboardPage = {
     const statusClass = availability.usable ? 'badge-active' : 'badge-expired';
     const initial = (user.username || user.email || 'U').trim().charAt(0).toUpperCase();
     const links = [
+      ['通用订阅（自动识别）', 'universal'],
       ['V2Ray / Shadowrocket', 'v2ray'],
       ['Clash / Verge / Stash', 'clash'],
       ['Quantumult X', 'quantumult'],

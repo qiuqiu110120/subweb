@@ -60,7 +60,7 @@ npx wrangler d1 execute proxy-subscription-db --local --file=./db/schema.sql
 
 保存配置并重新部署。部署成功后打开站点登录页，点击“初始化管理员”，输入 `ADMIN_BOOTSTRAP_TOKEN` 和管理员账号资料。Web 初始化会自动创建空 D1 的全部表和默认套餐；旧版本数据库也会自动补充管理员字段，因此 Pages 部署不需要命令行执行 SQL。
 
-管理员登录后可以在 Web 后台完成：用户创建、资料/密码/权限/状态管理，套餐分配与订阅额度管理，节点和套餐增改停用，兑换码批量生成，订单状态处理及运营统计查看。
+管理员登录后可以在 Web 后台完成：用户创建、资料/密码/权限/状态管理，套餐分配与订阅额度管理，节点和套餐增改停用，兑换码批量生成，订单状态处理及运营统计查看。节点页支持一键导入 VMess、VLESS、Shadowsocks、Trojan、Hysteria2、WireGuard、SOCKS、HTTP、TUIC、AnyTLS、NaiveProxy 分享链接、标准 Base64 订阅内容或 HTTP(S) 订阅地址；用户中心提供自动识别、Clash Meta、V2Ray/Shadowrocket、sing-box、Loon 与 Quantumult X 格式的订阅链接。
 
 若选择独立部署 `worker/`，仍可使用 `worker/db/schema.sql` 和对应的 `worker/wrangler.toml` 通过 Wrangler 初始化及部署。
 

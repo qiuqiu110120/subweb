@@ -62,6 +62,7 @@ const api = {
   adminRevokeAllocation: (id) => api.request(`/admin/users/${encodeURIComponent(id)}/allocation`, { method: 'DELETE' }),
   adminNodes: () => api.request('/admin/nodes'),
   adminCreateNode: (payload) => api.request('/admin/nodes', { method: 'POST', body: JSON.stringify(payload) }),
+  adminImportNodes: (source, sourceType = 'auto') => api.request('/admin/nodes/import', { method: 'POST', body: JSON.stringify({ source, sourceType }) }),
   adminUpdateNode: (id, payload) => api.request(`/admin/nodes/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   adminDeleteNode: (id) => api.request(`/admin/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   adminProducts: () => api.request('/admin/products'),

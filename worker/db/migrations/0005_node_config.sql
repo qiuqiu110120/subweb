@@ -1,0 +1,1 @@
+ALTER TABLE nodes ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}';

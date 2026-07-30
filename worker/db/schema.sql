@@ -93,11 +93,13 @@ CREATE TABLE IF NOT EXISTS nodes (
   network     TEXT NOT NULL DEFAULT 'ws',
   security    TEXT NOT NULL DEFAULT 'tls',
   path        TEXT NOT NULL DEFAULT '/',
+  host        TEXT NOT NULL DEFAULT '',
   sni         TEXT NOT NULL DEFAULT '',
   public_key  TEXT NOT NULL DEFAULT '',
   short_id    TEXT NOT NULL DEFAULT '',
   fingerprint TEXT NOT NULL DEFAULT 'chrome',
   flow        TEXT NOT NULL DEFAULT '',
+  config_json TEXT NOT NULL DEFAULT '{}',
   sort_order  INTEGER NOT NULL DEFAULT 0,
   is_active   INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
   created_at  INTEGER NOT NULL
