@@ -53,7 +53,7 @@ const AdminPage = {
     const root = document.getElementById('app');
     if (!this.data) {
       root.innerHTML = '<main class="page-loading"><span class="spinner"></span></main>';
-      this.load().then(() => this.render()).catch(() => {});
+      if (!this.loading) this.load().then(() => this.render()).catch(() => {});
       return;
     }
     const { stats } = this.data;
@@ -223,7 +223,7 @@ const AdminPage = {
 
   async refresh(query = this.data?.query || '') {
     this.data = null;
-    this.render();
+    document.getElementById('app').innerHTML = '<main class="page-loading"><span class="spinner"></span></main>';
     try { await this.load(query); this.render(); } catch { /* load reports the error */ }
   },
 
